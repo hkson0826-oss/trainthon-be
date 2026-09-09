@@ -14,6 +14,7 @@ import { analysisRouter } from './modules/analysis/router.js';
 import { candidatesRouter, type CandidatesDeps } from './modules/candidates/router.js';
 import { configRouter } from './modules/config/router.js';
 import { incidentsRouter, type IncidentsDeps } from './modules/incidents/router.js';
+import { insurerReviewSummary, insurerRouter } from './modules/insurer/index.js';
 import { meRouter } from './modules/me/router.js';
 import { countUnread, notificationsRouter } from './modules/notifications/index.js';
 import { placesRouter } from './modules/places/index.js';
@@ -100,8 +101,9 @@ export function createApp(deps: AppDeps): Express {
   authed.use(submissionsRouter({ env, db, storage, ...(analysisSummary ? { analysisSummary } : {}) })); // F5
   if (deps.analysis) {
     authed.use(analysisRouter(deps.analysis.deps)); // F6
-    authed.use(candidatesRouter({ env, db, storage, logger, ...(deps.insurerReview ? { insurerReview: deps.insurerReview } : {}) })); // F7
+    authed.use(candidatesRouter({ env, db, storage, logger, insurerReview: deps.insurerReview ?? insurerReviewSummary })); // F7
   }
+  authed.use(insurerRouter({ env, db })); // F8 + F9
   for (const r of deps.authedRouters ?? []) authed.use(r);
   api.use(authed);
 
