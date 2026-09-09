@@ -6,6 +6,7 @@ import { EnvError, envWarnings, loadEnv } from './config/env.js';
 import { migrate } from './db/migrate.js';
 import { PgDb } from './lib/db.js';
 import { createLogger } from './lib/logger.js';
+import { sweepStagingUploads } from './modules/incidents/photos.service.js';
 
 async function main(): Promise<void> {
   const dotenvPath = loadDotenv();
@@ -36,8 +37,21 @@ async function main(): Promise<void> {
     logger.info({ port: env.PORT, prefix: env.API_PREFIX, aiMode: env.AI_MODE, demoMode: env.DEMO_MODE }, 'server listening');
   });
 
+  const runStagingSweep = async () => {
+    try {
+      const { scanned, removed } = await sweepStagingUploads({ env, storage });
+      if (removed.length) logger.info({ scanned, removed: removed.length }, 'staging sweep removed abandoned uploads');
+    } catch (err) {
+      logger.warn({ err }, 'staging sweep failed');
+    }
+  };
+  void runStagingSweep();
+  const sweepTimer = setInterval(() => void runStagingSweep(), env.STAGING_SWEEP_INTERVAL_MIN * 60 * 1000);
+  sweepTimer.unref();
+
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
+    clearInterval(sweepTimer);
     server.close(async () => {
       await db.close();
       process.exit(0);

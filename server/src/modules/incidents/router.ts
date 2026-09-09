@@ -6,6 +6,7 @@ import type { Env } from '../../config/env.js';
 import { audit } from '../../lib/audit.js';
 import type { Db, Queryable } from '../../lib/db.js';
 import { ApiError } from '../../lib/errors.js';
+import type { Logger } from '../../lib/logger.js';
 import { created, ok } from '../../lib/response.js';
 import { currentUser, requireRole, type AuthedUser } from '../../middleware/auth.js';
 import { runMatching } from '../matching/index.js';
@@ -27,6 +28,7 @@ export interface IncidentsDeps {
   env: Env;
   db: Db;
   storage: StorageAdapter;
+  logger?: Logger;
   /** Filled in by the submissions module: per-incident evidence summary for DTOs. */
   submissionSummary?: (q: Queryable, incidentId: string, viewerId: string) => Promise<SubmissionSummary>;
 }
@@ -109,6 +111,10 @@ export async function witnessIncidentDto(deps: IncidentsDeps, q: Queryable, i: I
   };
 }
 
+/**
+ * Signs photo URLs for a DTO. Signing is best-effort: a Storage outage yields `url: null`
+ * for that photo instead of failing the whole read (or, on create, failing after commit).
+ */
 async function signPhotos(deps: IncidentsDeps, q: Queryable, viewerId: string, incidentId: string, photos: IncidentPhotoRow[]) {
   if (!photos.length) return [];
   const signed = await Promise.all(
@@ -118,16 +124,22 @@ async function signPhotos(deps: IncidentsDeps, q: Queryable, viewerId: string, i
       mime: p.mime,
       width: p.width,
       height: p.height,
-      url: await deps.storage.createSignedUrl(deps.env.SUPABASE_BUCKET_PHOTOS, p.object_path, deps.env.PHOTO_SIGNED_URL_TTL_SEC),
+      url: await deps.storage.createSignedUrl(deps.env.SUPABASE_BUCKET_PHOTOS, p.object_path, deps.env.PHOTO_SIGNED_URL_TTL_SEC).catch((err: unknown) => {
+        deps.logger?.warn({ err, incidentId, photoId: p.id }, 'photo signed URL failed');
+        return null;
+      }),
     })),
   );
-  await audit(q, {
-    actorId: viewerId,
-    action: 'photo.signed_url',
-    targetType: 'incident',
-    targetId: incidentId,
-    metadata: { count: photos.length, ttlSec: deps.env.PHOTO_SIGNED_URL_TTL_SEC },
-  });
+  const signedCount = signed.filter((p) => p.url !== null).length;
+  if (signedCount > 0) {
+    await audit(q, {
+      actorId: viewerId,
+      action: 'photo.signed_url',
+      targetType: 'incident',
+      targetId: incidentId,
+      metadata: { count: signedCount, ttlSec: deps.env.PHOTO_SIGNED_URL_TTL_SEC },
+    }).catch((err: unknown) => deps.logger?.warn({ err, incidentId }, 'photo.signed_url audit failed'));
+  }
   return signed;
 }
 
@@ -219,13 +231,18 @@ export function incidentsRouter(deps: IncidentsDeps): Router {
       });
       writtenPhotoPaths = [];
 
-      const full = await findIncident(db, result.incident.id);
-      if (!full) throw new Error('incident vanished after insert');
-      const dto = await ownerIncidentDto(deps, db, full, user, { withPhotos: true });
-      created(res, {
-        ...dto,
-        matching: { matchedWitnessCount: result.matching.matchedWitnessCount, notifiedAt: result.matching.notifiedAt },
-      });
+      // Committed. Anything after this point must not turn into an error response, or the
+      // client would retry and create a duplicate incident + deposit.
+      const matching = { matchedWitnessCount: result.matching.matchedWitnessCount, notifiedAt: result.matching.notifiedAt };
+      try {
+        const full = await findIncident(db, result.incident.id);
+        if (!full) throw new Error('incident vanished after insert');
+        const dto = await ownerIncidentDto(deps, db, full, user, { withPhotos: true });
+        created(res, { ...dto, matching });
+      } catch (err) {
+        deps.logger?.error({ err, incidentId: result.incident.id }, 'incident created but response DTO failed; returning minimal body');
+        created(res, { id: result.incident.id, status: result.incident.status, matching, partial: true });
+      }
     } catch (err) {
       if (writtenPhotoPaths.length) await removeIncidentPhotos(deps, writtenPhotoPaths);
       next(err);

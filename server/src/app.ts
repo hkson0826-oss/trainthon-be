@@ -85,7 +85,7 @@ export function createApp(deps: AppDeps): Express {
   authed.use(rateLimit(env.RATE_LIMIT_PER_MINUTE));
   authed.use(meRouter({ db, unreadNotificationCount: deps.unreadNotificationCount ?? ((userId) => countUnread(db, userId)) }));
   authed.use(placesRouter(db)); // F2
-  authed.use(incidentsRouter({ env, db, storage, ...(deps.submissionSummary ? { submissionSummary: deps.submissionSummary } : {}) })); // F3
+  authed.use(incidentsRouter({ env, db, storage, logger, ...(deps.submissionSummary ? { submissionSummary: deps.submissionSummary } : {}) })); // F3
   authed.use(notificationsRouter(db)); // F4
   authed.use(visitsRouter(db)); // F4
   for (const r of deps.authedRouters ?? []) authed.use(r);

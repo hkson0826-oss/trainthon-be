@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { sweepStagingUploads } from '../../src/modules/incidents/photos.service.js';
 import { jpegWithExif, notAnImage, pngWithText } from '../helpers/fixtures.js';
 import { PLACE_A, PLACE_B, TEST_IDS, TOKENS, bearer, createTestContext, type TestContext } from '../helpers/testApp.js';
 
@@ -237,6 +238,53 @@ describe('F3 incidents + F4 matching', () => {
   it('role gates: Y cannot create incidents or request photo URLs', async () => {
     expect((await request(ctx.app).post('/api/v1/incidents').set(bearer(TOKENS.witness)).send(incidentBody())).status).toBe(403);
     expect((await request(ctx.app).post('/api/v1/uploads/photo-url').set(bearer(TOKENS.witness)).send({ mime: 'image/jpeg', bytes: 10 })).status).toBe(403);
+  });
+
+  it('photo-url expiresAt reflects the storage-enforced expiry, not a client-side promise', async () => {
+    const res = await request(ctx.app).post('/api/v1/uploads/photo-url').set(bearer(TOKENS.requester)).send({ mime: 'image/jpeg', bytes: 10 });
+    expect(res.status).toBe(201);
+    const ttlMs = new Date(res.body.data.expiresAt).getTime() - Date.now();
+    // memory adapter honours the requested TTL (600s); Supabase would report its fixed 2h window here
+    expect(ttlMs).toBeGreaterThan(590_000);
+    expect(ttlMs).toBeLessThanOrEqual(600_000);
+  });
+
+  it('a Storage outage after commit does not fail the create: incident is returned with url:null photos and no duplicate', async () => {
+    const p1 = await stagePhoto(TOKENS.requester, jpegWithExif(800, 600), 'image/jpeg');
+    const before = await ctx.db.query<{ n: string }>('select count(*)::text as n from incidents');
+    const original = ctx.storage.createSignedUrl.bind(ctx.storage);
+    ctx.storage.createSignedUrl = async () => {
+      throw new Error('supabase storage down');
+    };
+    try {
+      const res = await request(ctx.app).post('/api/v1/incidents').set(bearer(TOKENS.requester)).send(incidentBody({ photoObjectPaths: [p1] }));
+      expect(res.status).toBe(201);
+      expect(res.body.data.id).toEqual(expect.any(String));
+      expect(res.body.data.photos).toEqual([expect.objectContaining({ position: 0, url: null })]);
+      expect(res.body.data.matching.matchedWitnessCount).toBe(1);
+    } finally {
+      ctx.storage.createSignedUrl = original;
+    }
+    const after = await ctx.db.query<{ n: string }>('select count(*)::text as n from incidents');
+    expect(Number(after.rows[0]?.n)).toBe(Number(before.rows[0]?.n) + 1);
+  });
+
+  it('staging sweep removes abandoned uploads older than the retention window and keeps fresh ones', async () => {
+    const stale = await stagePhoto(TOKENS.requester, jpegWithExif(), 'image/jpeg');
+    const fresh = await stagePhoto(TOKENS.requester, jpegWithExif(), 'image/jpeg');
+    ctx.storage.put(PHOTO_BUCKET, stale, jpegWithExif(), 'image/jpeg', new Date(Date.now() - 25 * 60 * 60 * 1000));
+    // an already-attached incident photo must never be touched
+    const attachedBefore = (await ctx.storage.listObjects(PHOTO_BUCKET, 'incidents/')).length;
+    expect(attachedBefore).toBeGreaterThan(0);
+
+    const result = await sweepStagingUploads({ env: ctx.env, storage: ctx.storage });
+    expect(result.removed).toEqual([stale]);
+    expect(await ctx.storage.getObjectInfo(PHOTO_BUCKET, stale)).toBeNull();
+    expect(await ctx.storage.getObjectInfo(PHOTO_BUCKET, fresh)).not.toBeNull();
+    expect((await ctx.storage.listObjects(PHOTO_BUCKET, 'incidents/')).length).toBe(attachedBefore);
+
+    // idempotent
+    expect((await sweepStagingUploads({ env: ctx.env, storage: ctx.storage })).removed).toEqual([]);
   });
 });
 

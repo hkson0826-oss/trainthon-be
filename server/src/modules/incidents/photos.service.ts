@@ -30,8 +30,27 @@ export async function createPhotoUploadUrl(deps: PhotoDeps, userId: string, mime
     objectPath,
     uploadUrl: signed.signedUrl,
     token: signed.token,
-    expiresAt: new Date(Date.now() + deps.env.UPLOAD_SIGNED_URL_TTL_SEC * 1000).toISOString(),
+    expiresAt: signed.expiresAt.toISOString(),
   };
+}
+
+export interface SweepResult {
+  scanned: number;
+  removed: string[];
+}
+
+/**
+ * Deletes staged photo uploads that were never attached to an incident. Objects under
+ * `staging/` older than STAGING_RETENTION_HOURS are removed (attach moves objects out of
+ * staging, so anything still there past the window is abandoned). Safe to run repeatedly.
+ */
+export async function sweepStagingUploads(deps: PhotoDeps, now = new Date()): Promise<SweepResult> {
+  const { env, storage } = deps;
+  const cutoff = now.getTime() - env.STAGING_RETENTION_HOURS * 60 * 60 * 1000;
+  const objects = await storage.listObjects(env.SUPABASE_BUCKET_PHOTOS, 'staging/');
+  const stale = objects.filter((o) => o.path.startsWith('staging/') && o.lastModified !== null && o.lastModified.getTime() < cutoff).map((o) => o.path);
+  for (let i = 0; i < stale.length; i += 100) await storage.remove(env.SUPABASE_BUCKET_PHOTOS, stale.slice(i, i + 100));
+  return { scanned: objects.length, removed: stale };
 }
 
 export interface ProcessedPhoto {
