@@ -6,6 +6,7 @@ import { EnvError, envWarnings, loadEnv } from './config/env.js';
 import { migrate } from './db/migrate.js';
 import { PgDb } from './lib/db.js';
 import { createLogger } from './lib/logger.js';
+import { createAnalysisRuntime, loadPrerecordedStore } from './modules/analysis/index.js';
 import { sweepStagingUploads } from './modules/incidents/photos.service.js';
 
 async function main(): Promise<void> {
@@ -31,11 +32,29 @@ async function main(): Promise<void> {
 
   const auth = new SupabaseAuthAdapter(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
   const storage = new SupabaseStorageAdapter(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-  const app = createApp({ env, db, auth, storage, logger });
+  const prerecorded = await loadPrerecordedStore(env.PRERECORDED_FIXTURES_DIR, logger);
+  const analysis = createAnalysisRuntime({ env, db, storage, logger, prerecorded });
+  const app = createApp({ env, db, auth, storage, logger, analysis });
 
   const server = app.listen(env.PORT, () => {
-    logger.info({ port: env.PORT, prefix: env.API_PREFIX, aiMode: env.AI_MODE, demoMode: env.DEMO_MODE }, 'server listening');
+    logger.info(
+      { port: env.PORT, prefix: env.API_PREFIX, aiMode: env.AI_MODE, provider: analysis.provider.kind, prerecordedFixtures: prerecorded.size(), demoMode: env.DEMO_MODE },
+      'server listening',
+    );
   });
+
+  // F6 step 9: orphaned analyses from a previous process; QUEUED rows are re-run, others time out.
+  const runAnalysisSweep = async () => {
+    try {
+      await analysis.sweep();
+    } catch (err) {
+      logger.warn({ err }, 'analysis sweep failed');
+    }
+  };
+  await runAnalysisSweep();
+  await analysis.recover().catch((err: unknown) => logger.warn({ err }, 'analysis recovery failed'));
+  const analysisSweepTimer = setInterval(() => void runAnalysisSweep(), 60_000);
+  analysisSweepTimer.unref();
 
   const runStagingSweep = async () => {
     try {
@@ -52,6 +71,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
     clearInterval(sweepTimer);
+    clearInterval(analysisSweepTimer);
     server.close(async () => {
       await db.close();
       process.exit(0);

@@ -1,0 +1,5 @@
+{
+  "requester": { "email": "demo.requester@lumina.local", "displayName": "김피해", "role": "REQUESTER", "notificationConsent": true },
+  "witness":   { "email": "demo.witness@lumina.local",   "displayName": "박목격", "role": "WITNESS",   "notificationConsent": true, "payoutReady": true },
+  "operator":  { "email": "demo.operator@lumina.local",  "displayName": "운영자", "role": "OPERATOR",  "notificationConsent": false }
+}

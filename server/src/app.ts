@@ -9,8 +9,13 @@ import { requireAuth } from './middleware/auth.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import { requestId } from './middleware/requestId.js';
+import type { AnalysisRuntime } from './modules/analysis/index.js';
+import { analysisRouter } from './modules/analysis/router.js';
+import { candidatesRouter, type CandidatesDeps } from './modules/candidates/router.js';
 import { configRouter } from './modules/config/router.js';
+import { demoRouter } from './modules/demo/router.js';
 import { incidentsRouter, type IncidentsDeps } from './modules/incidents/router.js';
+import { insurerReviewSummary, insurerRouter } from './modules/insurer/index.js';
 import { meRouter } from './modules/me/router.js';
 import { countUnread, notificationsRouter } from './modules/notifications/index.js';
 import { placesRouter } from './modules/places/index.js';
@@ -31,6 +36,9 @@ export interface AppDeps {
   unreadNotificationCount?: (userId: string) => Promise<number>;
   submissionSummary?: IncidentsDeps['submissionSummary'];
   analysisSummary?: SubmissionsDeps['analysisSummary'];
+  /** F6/F7 runtime (provider, queue). When omitted the analysis and candidates routes are not mounted. */
+  analysis?: AnalysisRuntime;
+  insurerReview?: CandidatesDeps['insurerReview'];
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -79,6 +87,7 @@ export function createApp(deps: AppDeps): Express {
 
   // Public (F0)
   api.use(configRouter(env, { db, ...(deps.migrationsDir ? { migrationsDir: deps.migrationsDir } : {}) }));
+  if (env.DEMO_MODE) api.use(demoRouter({ env, db, storage, logger })); // F10 (404 when DEMO_MODE=false)
   for (const r of deps.publicRouters ?? []) api.use(r);
 
   // Authenticated
@@ -90,7 +99,13 @@ export function createApp(deps: AppDeps): Express {
   authed.use(incidentsRouter({ env, db, storage, logger, submissionSummary: deps.submissionSummary ?? submissionSummaryProvider() })); // F3
   authed.use(notificationsRouter(db)); // F4
   authed.use(visitsRouter(db)); // F4
-  authed.use(submissionsRouter({ env, db, storage, ...(deps.analysisSummary ? { analysisSummary: deps.analysisSummary } : {}) })); // F5
+  const analysisSummary = deps.analysisSummary ?? deps.analysis?.analysisSummary;
+  authed.use(submissionsRouter({ env, db, storage, ...(analysisSummary ? { analysisSummary } : {}) })); // F5
+  if (deps.analysis) {
+    authed.use(analysisRouter(deps.analysis.deps)); // F6
+    authed.use(candidatesRouter({ env, db, storage, logger, insurerReview: deps.insurerReview ?? insurerReviewSummary })); // F7
+  }
+  authed.use(insurerRouter({ env, db })); // F8 + F9
   for (const r of deps.authedRouters ?? []) authed.use(r);
   api.use(authed);
 

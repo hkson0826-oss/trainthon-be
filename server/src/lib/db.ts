@@ -89,7 +89,7 @@ export class PgDb implements Db {
 /* ------------------------------------------------------------------ */
 
 export interface SingleConnection {
-  query<T = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<{ rows: T[] }>;
+  query<T = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<{ rows: T[]; affectedRows?: number }>;
   /** Multi-statement script runner; falls back to query() when absent. */
   exec?(text: string): Promise<void>;
   close?(): Promise<void>;
@@ -99,6 +99,11 @@ export interface SingleConnection {
  * Serialises transactions on a single connection so BEGIN/COMMIT pairs never
  * interleave. Sufficient for PGlite and for single-process tests.
  */
+/** UPDATE/DELETE without RETURNING yield no rows; prefer the driver's affected-row count. */
+function rowCountOf(r: { rows: unknown[]; affectedRows?: number }): number {
+  return r.rows.length > 0 ? r.rows.length : (r.affectedRows ?? 0);
+}
+
 export class SingleConnectionDb implements Db {
   private chain: Promise<unknown> = Promise.resolve();
 
@@ -107,7 +112,7 @@ export class SingleConnectionDb implements Db {
   async query<T = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<QueryResult<T>> {
     const run = async () => {
       const r = await this.conn.query<T>(text, params);
-      return { rows: r.rows, rowCount: r.rows.length };
+      return { rows: r.rows, rowCount: rowCountOf(r) };
     };
     const p = this.chain.then(run, run);
     this.chain = p.catch(() => undefined);
@@ -134,7 +139,7 @@ export class SingleConnectionDb implements Db {
       const tx: Queryable = {
         query: async <R = Record<string, unknown>>(text: string, params?: readonly unknown[]) => {
           const r = await this.conn.query<R>(text, params);
-          return { rows: r.rows, rowCount: r.rows.length };
+          return { rows: r.rows, rowCount: rowCountOf(r) };
         },
         exec: (text: string) => this.rawExec(text),
       };

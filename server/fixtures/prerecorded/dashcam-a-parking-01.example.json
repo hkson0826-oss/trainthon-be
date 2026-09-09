@@ -1,0 +1,22 @@
+{
+  "_comment": "Template only (*.example.json is ignored by the loader). Copy to dashcam-a-parking-01.json, fill videoSha256 with `sha256sum dashcam-a-parking-01.mp4` of the exact file that will be uploaded, and paste the real TwelveLabs response into rawResponse/result. Do not hand-write results. See MOCK_DATA_AND_ASSETS.md §6.2.",
+  "videoFileName": "dashcam-a-parking-01.mp4",
+  "videoSha256": "<sha256sum of the demo file>",
+  "provider": "twelvelabs",
+  "model": "pegasus1.5",
+  "promptVersion": "v1",
+  "analyzedAt": "2026-09-0XT00:00:00Z",
+  "rawResponse": { "data": "<raw JSON string returned in `data`>", "finish_reason": "stop", "usage": {} },
+  "result": {
+    "incidentDetected": true,
+    "incidentTimestampSeconds": 12,
+    "incidentTimestampLabel": "00:12",
+    "victimVehicle": "흰색 세단",
+    "otherVehicle": "검은색 SUV",
+    "event": "검은색 SUV가 후진하며 흰색 세단 우측 후면에 접촉한 것으로 보이는 장면",
+    "relevance": "HIGH",
+    "evidence": ["피해 차량의 색상과 차종이 사고 요청과 일치", "신고된 파손 부위(우측 후면)와 접근 방향이 유사"],
+    "videoDurationSec": 20.0,
+    "disclaimer": "AI 결과는 사고 사실·가해 차량·과실을 확정하지 않습니다. 원본 영상과 함께 사람이 확인해야 합니다."
+  }
+}

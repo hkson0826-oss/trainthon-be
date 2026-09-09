@@ -94,6 +94,6 @@ export async function listPhotos(q: Queryable, incidentId: string): Promise<Inci
 }
 
 export async function updateIncidentStatus(q: Queryable, id: string, from: IncidentStatus[], to: IncidentStatus): Promise<boolean> {
-  const r = await q.query(`update incidents set status = $2, updated_at = now() where id = $1 and status = any($3::text[])`, [id, to, from]);
-  return r.rowCount > 0;
+  const r = await q.query(`update incidents set status = $2, updated_at = now() where id = $1 and status = any($3::text[]) returning id`, [id, to, from]);
+  return r.rows.length > 0;
 }
