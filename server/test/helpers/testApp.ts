@@ -7,6 +7,9 @@ import { loadEnv, type Env } from '../../src/config/env.js';
 import { migrate } from '../../src/db/migrate.js';
 import { SingleConnectionDb, type Db } from '../../src/lib/db.js';
 import { silentLogger } from '../../src/lib/logger.js';
+import { createAnalysisRuntime, type AnalysisRuntime } from '../../src/modules/analysis/index.js';
+import { InMemoryPrerecordedStore, type PrerecordedFixture } from '../../src/modules/analysis/prerecorded.js';
+import type { AnalysisProvider } from '../../src/modules/analysis/provider.js';
 import { upsertProfile, type Role } from '../../src/modules/me/profiles.repo.js';
 import { upsertPlace } from '../../src/modules/places/index.js';
 import { upsertVisit } from '../../src/modules/visits/index.js';
@@ -63,7 +66,14 @@ export interface TestContext {
   env: Env;
   auth: StaticAuthAdapter;
   storage: MemoryStorageAdapter;
+  analysis: AnalysisRuntime;
   close(): Promise<void>;
+}
+
+export interface TestContextOptions {
+  provider?: AnalysisProvider;
+  fixtures?: PrerecordedFixture[];
+  fetchImpl?: typeof fetch;
 }
 
 export const PLACE_A = '11111111-1111-4111-8111-111111111111';
@@ -98,12 +108,22 @@ export async function seedTestProfiles(db: Db): Promise<void> {
 export async function createTestContext(
   envOverrides: Record<string, string> = {},
   extra: Partial<Omit<AppDeps, 'env' | 'db' | 'auth' | 'logger' | 'storage'>> = {},
+  options: TestContextOptions = {},
 ): Promise<TestContext> {
   const env = testEnv(envOverrides);
   const db = await createTestDb();
   await seedTestProfiles(db);
   await seedDemoWorld(db);
   const storage = new MemoryStorageAdapter();
+  const analysis = createAnalysisRuntime({
+    env,
+    db,
+    storage,
+    logger: silentLogger,
+    prerecorded: new InMemoryPrerecordedStore(options.fixtures ?? []),
+    ...(options.provider ? { provider: options.provider } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+  });
   const tokens = new Map<string, VerifiedIdentity>([
     [TOKENS.requester, { userId: TEST_IDS.requester, email: 'x@test.local' }],
     [TOKENS.witness, { userId: TEST_IDS.witness, email: 'y@test.local' }],
@@ -111,8 +131,8 @@ export async function createTestContext(
     [TOKENS.stranger, { userId: TEST_IDS.stranger, email: 'stranger@test.local' }],
   ]);
   const auth = new StaticAuthAdapter(tokens);
-  const app = createApp({ env, db, auth, storage, logger: silentLogger, ...extra });
-  return { app, db, env, auth, storage, close: () => db.close() };
+  const app = createApp({ env, db, auth, storage, logger: silentLogger, analysis, ...extra });
+  return { app, db, env, auth, storage, analysis, close: () => db.close() };
 }
 
 export const bearer = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
