@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "incidentDetected": { "type": "boolean" },
+    "incidentTimestampSeconds": { "type": "timestamp", "format": "seconds" },
+    "victimVehicle": { "type": "string" },
+    "otherVehicle": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+    "event": { "type": "string" },
+    "relevance": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "evidence": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+  },
+  "required": ["incidentDetected", "incidentTimestampSeconds", "victimVehicle", "event", "relevance", "evidence"]
+}

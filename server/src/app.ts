@@ -9,6 +9,9 @@ import { requireAuth } from './middleware/auth.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import { requestId } from './middleware/requestId.js';
+import type { AnalysisRuntime } from './modules/analysis/index.js';
+import { analysisRouter } from './modules/analysis/router.js';
+import { candidatesRouter, type CandidatesDeps } from './modules/candidates/router.js';
 import { configRouter } from './modules/config/router.js';
 import { incidentsRouter, type IncidentsDeps } from './modules/incidents/router.js';
 import { meRouter } from './modules/me/router.js';
@@ -31,6 +34,9 @@ export interface AppDeps {
   unreadNotificationCount?: (userId: string) => Promise<number>;
   submissionSummary?: IncidentsDeps['submissionSummary'];
   analysisSummary?: SubmissionsDeps['analysisSummary'];
+  /** F6/F7 runtime (provider, queue). When omitted the analysis and candidates routes are not mounted. */
+  analysis?: AnalysisRuntime;
+  insurerReview?: CandidatesDeps['insurerReview'];
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -90,7 +96,12 @@ export function createApp(deps: AppDeps): Express {
   authed.use(incidentsRouter({ env, db, storage, logger, submissionSummary: deps.submissionSummary ?? submissionSummaryProvider() })); // F3
   authed.use(notificationsRouter(db)); // F4
   authed.use(visitsRouter(db)); // F4
-  authed.use(submissionsRouter({ env, db, storage, ...(deps.analysisSummary ? { analysisSummary: deps.analysisSummary } : {}) })); // F5
+  const analysisSummary = deps.analysisSummary ?? deps.analysis?.analysisSummary;
+  authed.use(submissionsRouter({ env, db, storage, ...(analysisSummary ? { analysisSummary } : {}) })); // F5
+  if (deps.analysis) {
+    authed.use(analysisRouter(deps.analysis.deps)); // F6
+    authed.use(candidatesRouter({ env, db, storage, logger, ...(deps.insurerReview ? { insurerReview: deps.insurerReview } : {}) })); // F7
+  }
   for (const r of deps.authedRouters ?? []) authed.use(r);
   api.use(authed);
 
