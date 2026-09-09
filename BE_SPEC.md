@@ -266,7 +266,7 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 
 | Method/Path | 접근 | 설명 |
 |---|---|---|
-| `POST /api/v1/uploads/photo-url` | REQUESTER | `{ mime, bytes }` → `{ objectPath, uploadUrl, token, expiresAt }` (Supabase `createSignedUploadUrl`). 경로는 `staging/{userId}/{uuid}.{ext}` — 사고 요청이 아직 없으므로 사용자 스테이징 영역에 올린다 |
+| `POST /api/v1/uploads/photo-url` | REQUESTER | `{ mime, bytes }` → `{ objectPath, uploadUrl, token, expiresAt }` (Supabase `createSignedUploadUrl`). 경로는 `staging/{userId}/{uuid}.{ext}` — 사고 요청이 아직 없으므로 사용자 스테이징 영역에 올린다. `expiresAt`은 스토리지가 실제로 강제하는 만료 시각이다(Supabase signed upload URL은 2시간 고정, `UPLOAD_SIGNED_URL_TTL_SEC`로 줄일 수 없음) |
 | `POST /api/v1/incidents` | REQUESTER | 본문 아래. `photoObjectPaths`의 스테이징 객체를 검증·연결(→ `incidents/{incidentId}/{position}.{ext}`로 move)까지 한 번에 처리한다. `201` + `IncidentDetail` + `matching` 요약. 별도의 사진 연결 API는 없다 |
 | `GET /api/v1/incidents/:id` | 작성자, 알림 대상 Y, OPERATOR | Y에게는 개인정보 마스킹 DTO |
 | `GET /api/v1/me/incidents` | REQUESTER | 본인 요청 목록과 제보 현황 |
@@ -289,7 +289,7 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 **처리 규칙**
 
 1. zod로 검증: `occurredFrom < occurredTo`, 범위 ≤ 24h, `description` ≤ 1,000자, `consent` 둘 다 true 필수.
-2. 사진은 `photoObjectPaths`가 모두 본인 `staging/{userId}/` 아래인지 확인한 뒤, Storage 객체 메타를 조회해 MIME 시그니처·크기(≤10MB)·픽셀 상한을 확인하고 EXIF를 제거해 `incidents/{incidentId}/{position}.{ext}`로 옮기고 `incident_photos`에 연결한다. 타인 스테이징 경로나 존재하지 않는 객체는 400. 연결되지 않은 스테이징 객체는 24시간 후 정리 작업으로 삭제한다. 사진 없이도 요청 생성은 가능하되 데모 시나리오는 1~2장을 올린다.
+2. 사진은 `photoObjectPaths`가 모두 본인 `staging/{userId}/` 아래인지 확인한 뒤, Storage 객체 메타를 조회해 MIME 시그니처·크기(≤10MB)·픽셀 상한을 확인하고 EXIF를 제거해 `incidents/{incidentId}/{position}.{ext}`로 옮기고 `incident_photos`에 연결한다. 타인 스테이징 경로나 존재하지 않는 객체는 400. 연결되지 않은 스테이징 객체는 서버 기동 시와 `STAGING_SWEEP_INTERVAL_MIN`마다 도는 정리 작업이 `STAGING_RETENTION_HOURS`(기본 24시간)보다 오래된 것만 삭제한다. 트랜잭션 커밋 이후의 응답 조립(사진 signed URL 등)이 실패해도 201을 돌려준다(사진 `url: null`) — 커밋된 요청을 5xx로 돌려주면 클라이언트 재시도로 중복 요청·중복 입금이 생기기 때문. 사진 없이도 요청 생성은 가능하되 데모 시나리오는 1~2장을 올린다.
 3. 트랜잭션 안에서 `incidents(status=OPEN)` 저장 → `settlements(DEPOSITED, deposit_amount=DEMO_DEPOSIT_AMOUNT)` 생성 → **F4 매칭 실행** → 응답.
 4. 응답의 `matching: { matchedWitnessCount: 1, notifiedAt }`를 FE 완료 화면이 사용한다(`같은 시간대 방문 사용자 1명 발견`).
 5. Y용 DTO에서는 X의 이름·연락처·정확한 차량번호를 제거하고 `place, occurredFrom/To, type, vehicle(color/model/damageArea), description(요약)`, 사진 signed URL(짧은 TTL), `rewardPreview: { amount, mock: true }`(정산의 `witness_reward`), `mySubmissionId?`(이미 제보했으면)만 제공한다.
