@@ -26,6 +26,41 @@ export function notAnImage(): Buffer {
   return Buffer.from('%PDF-1.4 definitely not an image');
 }
 
+/**
+ * Minimal MP4 container: ftyp + moov(mvhd, trak(tkhd)) + mdat padding.
+ * Not decodable, but carries real duration/dimension metadata for header probing.
+ */
+export function fakeMp4(opts: { durationSec?: number; width?: number; height?: number; padBytes?: number; mvhdV1?: boolean } = {}): Buffer {
+  const { durationSec = 20, width = 1920, height = 1080, padBytes = 4096, mvhdV1 = false } = opts;
+  const timescale = 1000;
+  const ftyp = box('ftyp', Buffer.concat([Buffer.from('isom', 'ascii'), u32(0x200), Buffer.from('isomiso2mp41', 'ascii')]));
+  let mvhd: Buffer;
+  if (mvhdV1) {
+    mvhd = box('mvhd', Buffer.concat([Buffer.from([1, 0, 0, 0]), u64(0), u64(0), u32(timescale), u64(Math.round(durationSec * timescale)), Buffer.alloc(80)]));
+  } else {
+    mvhd = box('mvhd', Buffer.concat([Buffer.from([0, 0, 0, 0]), u32(0), u32(0), u32(timescale), u32(Math.round(durationSec * timescale)), Buffer.alloc(80)]));
+  }
+  // tkhd v0: version/flags(4) ctime(4) mtime(4) track_id(4) reserved(4) duration(4) reserved(8) layer(2) alt(2) volume(2) reserved(2) matrix(36) width(4) height(4)
+  const tkhd = box('tkhd', Buffer.concat([Buffer.alloc(76), u32(width * 65536), u32(height * 65536)]));
+  const trak = box('trak', tkhd);
+  const moov = box('moov', Buffer.concat([mvhd, trak]));
+  const mdat = box('mdat', Buffer.alloc(padBytes, 0xab));
+  return Buffer.concat([ftyp, moov, mdat]);
+}
+
+export function notAVideo(size = 1024): Buffer {
+  return Buffer.concat([Buffer.from('RIFF....AVI LIST', 'ascii'), Buffer.alloc(Math.max(0, size - 16))]);
+}
+
+function box(type: string, payload: Buffer): Buffer {
+  return Buffer.concat([u32(payload.length + 8), Buffer.from(type, 'ascii'), payload]);
+}
+function u64(n: number): Buffer {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64BE(BigInt(n));
+  return b;
+}
+
 function u16(n: number): Buffer {
   const b = Buffer.alloc(2);
   b.writeUInt16BE(n);

@@ -14,6 +14,7 @@ import { incidentsRouter, type IncidentsDeps } from './modules/incidents/router.
 import { meRouter } from './modules/me/router.js';
 import { countUnread, notificationsRouter } from './modules/notifications/index.js';
 import { placesRouter } from './modules/places/index.js';
+import { submissionSummaryProvider, submissionsRouter, type SubmissionsDeps } from './modules/submissions/router.js';
 import { visitsRouter } from './modules/visits/index.js';
 
 export interface AppDeps {
@@ -29,6 +30,7 @@ export interface AppDeps {
   publicRouters?: RequestHandler[];
   unreadNotificationCount?: (userId: string) => Promise<number>;
   submissionSummary?: IncidentsDeps['submissionSummary'];
+  analysisSummary?: SubmissionsDeps['analysisSummary'];
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -85,9 +87,10 @@ export function createApp(deps: AppDeps): Express {
   authed.use(rateLimit(env.RATE_LIMIT_PER_MINUTE));
   authed.use(meRouter({ db, unreadNotificationCount: deps.unreadNotificationCount ?? ((userId) => countUnread(db, userId)) }));
   authed.use(placesRouter(db)); // F2
-  authed.use(incidentsRouter({ env, db, storage, logger, ...(deps.submissionSummary ? { submissionSummary: deps.submissionSummary } : {}) })); // F3
+  authed.use(incidentsRouter({ env, db, storage, logger, submissionSummary: deps.submissionSummary ?? submissionSummaryProvider() })); // F3
   authed.use(notificationsRouter(db)); // F4
   authed.use(visitsRouter(db)); // F4
+  authed.use(submissionsRouter({ env, db, storage, ...(deps.analysisSummary ? { analysisSummary: deps.analysisSummary } : {}) })); // F5
   for (const r of deps.authedRouters ?? []) authed.use(r);
   api.use(authed);
 
