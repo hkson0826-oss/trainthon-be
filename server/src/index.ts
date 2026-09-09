@@ -1,4 +1,5 @@
 import { SupabaseAuthAdapter } from './adapters/auth/index.js';
+import { SupabaseStorageAdapter } from './adapters/storage/index.js';
 import { createApp } from './app.js';
 import { loadDotenv } from './config/dotenv.js';
 import { EnvError, envWarnings, loadEnv } from './config/env.js';
@@ -28,7 +29,8 @@ async function main(): Promise<void> {
   if (applied.length) logger.info({ applied }, 'migrations applied');
 
   const auth = new SupabaseAuthAdapter(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-  const app = createApp({ env, db, auth, logger });
+  const storage = new SupabaseStorageAdapter(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  const app = createApp({ env, db, auth, storage, logger });
 
   const server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT, prefix: env.API_PREFIX, aiMode: env.AI_MODE, demoMode: env.DEMO_MODE }, 'server listening');

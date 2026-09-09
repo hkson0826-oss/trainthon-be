@@ -1,6 +1,7 @@
 import cors from 'cors';
 import express, { type Express, type RequestHandler } from 'express';
 import type { AuthAdapter } from './adapters/auth/index.js';
+import type { StorageAdapter } from './adapters/storage/index.js';
 import type { Env } from './config/env.js';
 import type { Db } from './lib/db.js';
 import type { Logger } from './lib/logger.js';
@@ -9,12 +10,17 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import { requestId } from './middleware/requestId.js';
 import { configRouter } from './modules/config/router.js';
+import { incidentsRouter, type IncidentsDeps } from './modules/incidents/router.js';
 import { meRouter } from './modules/me/router.js';
+import { countUnread, notificationsRouter } from './modules/notifications/index.js';
+import { placesRouter } from './modules/places/index.js';
+import { visitsRouter } from './modules/visits/index.js';
 
 export interface AppDeps {
   env: Env;
   db: Db;
   auth: AuthAdapter;
+  storage: StorageAdapter;
   logger: Logger;
   migrationsDir?: string;
   /** Extra authenticated routers mounted under API_PREFIX (feature modules). */
@@ -22,10 +28,11 @@ export interface AppDeps {
   /** Extra public routers mounted under API_PREFIX. */
   publicRouters?: RequestHandler[];
   unreadNotificationCount?: (userId: string) => Promise<number>;
+  submissionSummary?: IncidentsDeps['submissionSummary'];
 }
 
 export function createApp(deps: AppDeps): Express {
-  const { env, db, auth, logger } = deps;
+  const { env, db, auth, storage, logger } = deps;
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -76,9 +83,11 @@ export function createApp(deps: AppDeps): Express {
   const authed = express.Router();
   authed.use(requireAuth(auth, db));
   authed.use(rateLimit(env.RATE_LIMIT_PER_MINUTE));
-  authed.use(
-    meRouter({ db, ...(deps.unreadNotificationCount ? { unreadNotificationCount: deps.unreadNotificationCount } : {}) }),
-  );
+  authed.use(meRouter({ db, unreadNotificationCount: deps.unreadNotificationCount ?? ((userId) => countUnread(db, userId)) }));
+  authed.use(placesRouter(db)); // F2
+  authed.use(incidentsRouter({ env, db, storage, ...(deps.submissionSummary ? { submissionSummary: deps.submissionSummary } : {}) })); // F3
+  authed.use(notificationsRouter(db)); // F4
+  authed.use(visitsRouter(db)); // F4
   for (const r of deps.authedRouters ?? []) authed.use(r);
   api.use(authed);
 

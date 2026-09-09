@@ -1,12 +1,15 @@
 import { PGlite } from '@electric-sql/pglite';
 import type { Express } from 'express';
 import { StaticAuthAdapter, type VerifiedIdentity } from '../../src/adapters/auth/index.js';
+import { MemoryStorageAdapter } from '../../src/adapters/storage/index.js';
 import { createApp, type AppDeps } from '../../src/app.js';
 import { loadEnv, type Env } from '../../src/config/env.js';
 import { migrate } from '../../src/db/migrate.js';
 import { SingleConnectionDb, type Db } from '../../src/lib/db.js';
 import { silentLogger } from '../../src/lib/logger.js';
 import { upsertProfile, type Role } from '../../src/modules/me/profiles.repo.js';
+import { upsertPlace } from '../../src/modules/places/index.js';
+import { upsertVisit } from '../../src/modules/visits/index.js';
 
 export const TEST_IDS = {
   requester: '00000000-0000-4000-8000-000000000001',
@@ -59,7 +62,28 @@ export interface TestContext {
   db: Db;
   env: Env;
   auth: StaticAuthAdapter;
+  storage: MemoryStorageAdapter;
   close(): Promise<void>;
+}
+
+export const PLACE_A = '11111111-1111-4111-8111-111111111111';
+export const PLACE_B = '11111111-1111-4111-8111-222222222222';
+
+/** Seeds A/B places and Y's A-parking visit 13:58~14:12 KST on the given date. */
+export async function seedDemoWorld(db: Db, demoDate = '2026-09-09'): Promise<void> {
+  await upsertPlace(db, { id: PLACE_A, name: 'A주차장', kind: 'PARKING_LOT', address: '서울특별시 강남구 테헤란로 000 지하 2층', lat: 37.501, lng: 127.0396 });
+  await upsertPlace(db, { id: PLACE_B, name: 'B아파트 지하주차장', kind: 'APARTMENT', address: '서울특별시 송파구 올림픽로 000', lat: 37.5145, lng: 127.1059 });
+  const entered = new Date(`${demoDate}T13:58:00+09:00`);
+  const exited = new Date(`${demoDate}T14:12:00+09:00`);
+  await upsertVisit(db, {
+    id: '22222222-2222-4222-8222-222222222222',
+    userId: TEST_IDS.witness,
+    placeId: PLACE_A,
+    enteredAt: entered,
+    exitedAt: exited,
+    source: 'SEED',
+    retainUntil: new Date(Date.now() + 30 * 86_400_000),
+  });
 }
 
 export async function seedTestProfiles(db: Db): Promise<void> {
@@ -73,11 +97,13 @@ export async function seedTestProfiles(db: Db): Promise<void> {
 
 export async function createTestContext(
   envOverrides: Record<string, string> = {},
-  extra: Partial<Omit<AppDeps, 'env' | 'db' | 'auth' | 'logger'>> = {},
+  extra: Partial<Omit<AppDeps, 'env' | 'db' | 'auth' | 'logger' | 'storage'>> = {},
 ): Promise<TestContext> {
   const env = testEnv(envOverrides);
   const db = await createTestDb();
   await seedTestProfiles(db);
+  await seedDemoWorld(db);
+  const storage = new MemoryStorageAdapter();
   const tokens = new Map<string, VerifiedIdentity>([
     [TOKENS.requester, { userId: TEST_IDS.requester, email: 'x@test.local' }],
     [TOKENS.witness, { userId: TEST_IDS.witness, email: 'y@test.local' }],
@@ -85,8 +111,8 @@ export async function createTestContext(
     [TOKENS.stranger, { userId: TEST_IDS.stranger, email: 'stranger@test.local' }],
   ]);
   const auth = new StaticAuthAdapter(tokens);
-  const app = createApp({ env, db, auth, logger: silentLogger, ...extra });
-  return { app, db, env, auth, close: () => db.close() };
+  const app = createApp({ env, db, auth, storage, logger: silentLogger, ...extra });
+  return { app, db, env, auth, storage, close: () => db.close() };
 }
 
 export const bearer = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
