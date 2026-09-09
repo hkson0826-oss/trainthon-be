@@ -73,8 +73,8 @@ export async function bumpAttempt(q: Queryable, id: string, requestHash: string 
 }
 
 export async function markFinalizing(q: Queryable, id: string): Promise<boolean> {
-  const r = await q.query(`update analyses set status = 'FINALIZING', updated_at = now() where id = $1 and status = 'ANALYZING'`, [id]);
-  return r.rowCount > 0;
+  const r = await q.query(`update analyses set status = 'FINALIZING', updated_at = now() where id = $1 and status = 'ANALYZING' returning id`, [id]);
+  return r.rows.length > 0;
 }
 
 export async function markReady(

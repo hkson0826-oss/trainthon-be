@@ -39,7 +39,7 @@ export interface AnalysisDeps {
 
 const RETRYABLE: readonly ProviderErrorCode[] = ['INVALID_RESPONSE', 'PROVIDER_UNAVAILABLE'];
 const FALLBACK_ELIGIBLE: readonly ProviderErrorCode[] = ['PROVIDER_UNAVAILABLE', 'TIMEOUT'];
-const MIN_CALL_BUDGET_MS = 5_000;
+const MIN_CALL_BUDGET_MS = 1_000;
 
 export function toAnalysisDto(a: AnalysisRow) {
   return {
