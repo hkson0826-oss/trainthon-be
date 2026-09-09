@@ -1,7 +1,9 @@
+import { loadDotenv } from '../src/config/dotenv.js';
 import { loadEnv } from '../src/config/env.js';
 import { migrate } from '../src/db/migrate.js';
 import { PgDb } from '../src/lib/db.js';
 
+loadDotenv();
 const env = loadEnv();
 const db = new PgDb(env.DATABASE_URL);
 try {

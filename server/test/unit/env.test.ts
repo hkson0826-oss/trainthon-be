@@ -43,3 +43,22 @@ describe('loadEnv', () => {
     expect(envWarnings(loadEnv({ ...infra, AI_MODE: 'live', TWELVELABS_API_KEY: 'k' }))).toHaveLength(0);
   });
 });
+
+describe('loadDotenv', () => {
+  it('loads a .env file without overriding existing variables and ignores comments/quotes', async () => {
+    const { loadDotenv } = await import('../../src/config/dotenv.js');
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const path = await import('node:path');
+    const dir = mkdtempSync(path.join(tmpdir(), 'lumina-env-'));
+    const file = path.join(dir, '.env');
+    writeFileSync(file, '# comment\nDOTENV_TEST_A=hello # trailing\nDOTENV_TEST_B="quoted value"\nexport DOTENV_TEST_C=c\nDOTENV_TEST_EXISTING=from-file\n');
+    process.env.DOTENV_TEST_EXISTING = 'from-process';
+    expect(loadDotenv(file)).toBe(file);
+    expect(process.env.DOTENV_TEST_A).toBe('hello');
+    expect(process.env.DOTENV_TEST_B).toBe('quoted value');
+    expect(process.env.DOTENV_TEST_C).toBe('c');
+    expect(process.env.DOTENV_TEST_EXISTING).toBe('from-process');
+    expect(loadDotenv(path.join(dir, 'missing.env'))).toBeNull();
+  });
+});

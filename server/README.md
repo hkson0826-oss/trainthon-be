@@ -7,7 +7,7 @@
 ```bash
 cd server
 npm install
-cp ../.env.example .env      # FILL 항목 채우기 (DATABASE_URL, SUPABASE_*, TWELVELABS_API_KEY, DEMO_*)
+cp ../.env.example .env      # FILL 항목 채우기. server/.env 는 dev/start/migrate/seed 실행 시 자동 로드된다(기존 env 우선)
 npm run migrate              # supabase/migrations/*.sql 적용 (서버 시작 시에도 자동 적용)
 npm run dev                  # http://localhost:3001/api/v1
 ```

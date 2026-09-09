@@ -111,3 +111,4 @@ describe('F1 auth + /me', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 });
+

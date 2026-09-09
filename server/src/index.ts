@@ -1,11 +1,13 @@
 import { SupabaseAuthAdapter } from './adapters/auth/index.js';
 import { createApp } from './app.js';
+import { loadDotenv } from './config/dotenv.js';
 import { EnvError, envWarnings, loadEnv } from './config/env.js';
 import { migrate } from './db/migrate.js';
 import { PgDb } from './lib/db.js';
 import { createLogger } from './lib/logger.js';
 
 async function main(): Promise<void> {
+  const dotenvPath = loadDotenv();
   let env;
   try {
     env = loadEnv();
@@ -18,6 +20,7 @@ async function main(): Promise<void> {
     throw err;
   }
   const logger = createLogger(env.LOG_LEVEL);
+  if (dotenvPath) logger.info({ dotenvPath }, 'loaded .env file');
   for (const w of envWarnings(env)) logger.warn(w);
 
   const db = new PgDb(env.DATABASE_URL);

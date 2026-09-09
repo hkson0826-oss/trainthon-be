@@ -25,34 +25,45 @@ async function ensureTable(db: Db): Promise<void> {
     )`);
 }
 
+/** Arbitrary constant; all instances must use the same key. */
+const MIGRATION_LOCK_KEY = 7_248_113_901;
+
 /**
- * Applies pending SQL migrations in filename order. Each file runs in its own
- * transaction; a checksum mismatch on an already-applied file is an error.
+ * Applies pending SQL migrations in filename order inside one transaction that
+ * holds a transaction-scoped advisory lock, so concurrently starting instances
+ * serialise: the second waits, re-reads schema_migrations and finds nothing
+ * pending. A checksum mismatch on an already-applied file is an error.
  */
 export async function migrate(db: Db, dir = MIGRATIONS_DIR): Promise<{ applied: string[]; skipped: string[] }> {
   await ensureTable(db);
   const files = await listMigrationFiles(dir);
-  const existing = new Map(
-    (await db.query<AppliedMigration>('select version, checksum from schema_migrations')).rows.map((r) => [r.version, r.checksum]),
-  );
-  const applied: string[] = [];
-  const skipped: string[] = [];
+  const contents = new Map<string, { sql: string; checksum: string }>();
   for (const file of files) {
     const sql = await readFile(path.join(dir, file), 'utf8');
-    const checksum = createHash('sha256').update(sql).digest('hex');
-    const prev = existing.get(file);
-    if (prev) {
-      if (prev !== checksum) throw new Error(`Migration ${file} was modified after being applied (checksum mismatch)`);
-      skipped.push(file);
-      continue;
-    }
-    await db.transaction(async (tx) => {
+    contents.set(file, { sql, checksum: createHash('sha256').update(sql).digest('hex') });
+  }
+
+  return db.transaction(async (tx) => {
+    await tx.query('select pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
+    const existing = new Map(
+      (await tx.query<AppliedMigration>('select version, checksum from schema_migrations')).rows.map((r) => [r.version, r.checksum]),
+    );
+    const applied: string[] = [];
+    const skipped: string[] = [];
+    for (const file of files) {
+      const { sql, checksum } = contents.get(file)!;
+      const prev = existing.get(file);
+      if (prev) {
+        if (prev !== checksum) throw new Error(`Migration ${file} was modified after being applied (checksum mismatch)`);
+        skipped.push(file);
+        continue;
+      }
       await tx.exec(sql);
       await tx.query('insert into schema_migrations (version, checksum) values ($1, $2)', [file, checksum]);
-    });
-    applied.push(file);
-  }
-  return { applied, skipped };
+      applied.push(file);
+    }
+    return { applied, skipped };
+  });
 }
 
 export async function pendingMigrations(db: Db, dir = MIGRATIONS_DIR): Promise<string[]> {
