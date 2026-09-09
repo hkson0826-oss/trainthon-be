@@ -11,8 +11,7 @@ import { createAnalysisRuntime, type AnalysisRuntime } from '../../src/modules/a
 import { InMemoryPrerecordedStore, type PrerecordedFixture } from '../../src/modules/analysis/prerecorded.js';
 import type { AnalysisProvider } from '../../src/modules/analysis/provider.js';
 import { upsertProfile, type Role } from '../../src/modules/me/profiles.repo.js';
-import { upsertPlace } from '../../src/modules/places/index.js';
-import { upsertVisit } from '../../src/modules/visits/index.js';
+import { DEMO_PLACE_A, DEMO_PLACE_B, seedDemoPlaces, seedDemoVisit } from '../../src/modules/demo/seed.js';
 
 export const TEST_IDS = {
   requester: '00000000-0000-4000-8000-000000000001',
@@ -76,31 +75,20 @@ export interface TestContextOptions {
   fetchImpl?: typeof fetch;
 }
 
-export const PLACE_A = '11111111-1111-4111-8111-111111111111';
-export const PLACE_B = '11111111-1111-4111-8111-222222222222';
+export const PLACE_A = DEMO_PLACE_A;
+export const PLACE_B = DEMO_PLACE_B;
 
 /** Seeds A/B places and Y's A-parking visit 13:58~14:12 KST on the given date. */
 export async function seedDemoWorld(db: Db, demoDate = '2026-09-09'): Promise<void> {
-  await upsertPlace(db, { id: PLACE_A, name: 'A주차장', kind: 'PARKING_LOT', address: '서울특별시 강남구 테헤란로 000 지하 2층', lat: 37.501, lng: 127.0396 });
-  await upsertPlace(db, { id: PLACE_B, name: 'B아파트 지하주차장', kind: 'APARTMENT', address: '서울특별시 송파구 올림픽로 000', lat: 37.5145, lng: 127.1059 });
-  const entered = new Date(`${demoDate}T13:58:00+09:00`);
-  const exited = new Date(`${demoDate}T14:12:00+09:00`);
-  await upsertVisit(db, {
-    id: '22222222-2222-4222-8222-222222222222',
-    userId: TEST_IDS.witness,
-    placeId: PLACE_A,
-    enteredAt: entered,
-    exitedAt: exited,
-    source: 'SEED',
-    retainUntil: new Date(Date.now() + 30 * 86_400_000),
-  });
+  await seedDemoPlaces(db);
+  await seedDemoVisit(db, TEST_IDS.witness, demoDate, 'Asia/Seoul');
 }
 
 export async function seedTestProfiles(db: Db): Promise<void> {
   const rows: Array<{ id: string; role: Role; displayName: string; email: string; notificationConsent: boolean; payoutReady: boolean }> = [
-    { id: TEST_IDS.requester, role: 'REQUESTER', displayName: '김피해', email: 'x@test.local', notificationConsent: true, payoutReady: false },
-    { id: TEST_IDS.witness, role: 'WITNESS', displayName: '박목격', email: 'y@test.local', notificationConsent: true, payoutReady: true },
-    { id: TEST_IDS.operator, role: 'OPERATOR', displayName: '운영자', email: 'op@test.local', notificationConsent: false, payoutReady: false },
+    { id: TEST_IDS.requester, role: 'REQUESTER', displayName: '김피해', email: 'demo.requester@lumina.local', notificationConsent: true, payoutReady: false },
+    { id: TEST_IDS.witness, role: 'WITNESS', displayName: '박목격', email: 'demo.witness@lumina.local', notificationConsent: true, payoutReady: true },
+    { id: TEST_IDS.operator, role: 'OPERATOR', displayName: '운영자', email: 'demo.operator@lumina.local', notificationConsent: false, payoutReady: false },
   ];
   for (const r of rows) await upsertProfile(db, r);
 }

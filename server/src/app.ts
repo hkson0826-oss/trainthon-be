@@ -13,6 +13,7 @@ import type { AnalysisRuntime } from './modules/analysis/index.js';
 import { analysisRouter } from './modules/analysis/router.js';
 import { candidatesRouter, type CandidatesDeps } from './modules/candidates/router.js';
 import { configRouter } from './modules/config/router.js';
+import { demoRouter } from './modules/demo/router.js';
 import { incidentsRouter, type IncidentsDeps } from './modules/incidents/router.js';
 import { insurerReviewSummary, insurerRouter } from './modules/insurer/index.js';
 import { meRouter } from './modules/me/router.js';
@@ -86,6 +87,7 @@ export function createApp(deps: AppDeps): Express {
 
   // Public (F0)
   api.use(configRouter(env, { db, ...(deps.migrationsDir ? { migrationsDir: deps.migrationsDir } : {}) }));
+  if (env.DEMO_MODE) api.use(demoRouter({ env, db, storage, logger })); // F10 (404 when DEMO_MODE=false)
   for (const r of deps.publicRouters ?? []) api.use(r);
 
   // Authenticated

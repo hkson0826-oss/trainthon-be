@@ -1,0 +1,1045 @@
+openapi: 3.1.0
+info:
+  title: Lumina Backend API
+  version: 1.0.0
+  description: |
+    주차장 사고 증거 매칭 데모 MVP 백엔드 (BE_SPEC.md F0~F10).
+
+    공통 규약
+    - 모든 응답은 `{ data, meta }` 또는 `{ error: { code, message, retryable, details? }, meta: { requestId } }`.
+    - 인증: `Authorization: Bearer <Supabase access_token>`. `/config`, `/health`, `/ready`, `/demo/*` 만 공개.
+    - 시간은 ISO 8601 UTC 문자열. 금액은 KRW 정수.
+    - 보험사 채택·정산은 Mock 이며 관련 DTO 는 항상 `mock: true` 를 포함한다.
+    - AI 결과(`analysis.result`)는 사고 사실·가해 차량·과실을 확정하지 않는다 (`disclaimer` 참고).
+servers:
+  - url: http://localhost:3001/api/v1
+    description: local
+tags:
+  - { name: F0 config }
+  - { name: F1 me }
+  - { name: F2 places }
+  - { name: F3 incidents }
+  - { name: F4 notifications }
+  - { name: F5 submissions }
+  - { name: F6 analysis }
+  - { name: F7 candidates }
+  - { name: F8 insurer (mock) }
+  - { name: F9 settlement (mock) }
+  - { name: F10 demo }
+
+security:
+  - bearerAuth: []
+
+paths:
+  /config:
+    get:
+      tags: [F0 config]
+      security: []
+      summary: 공개 설정 (데모 모드, AI 모드, 업로드 제한, 정산 Mock 값)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope_PublicConfig'
+  /health:
+    get:
+      tags: [F0 config]
+      security: []
+      summary: 프로세스 liveness
+      responses:
+        '200': { description: '`{ data: { status: "ok" } }`' }
+  /ready:
+    get:
+      tags: [F0 config]
+      security: []
+      summary: DB 연결 + 마이그레이션 적용 여부
+      responses:
+        '200': { description: ready }
+        '503': { description: not ready (`PROVIDER_UNAVAILABLE`) }
+
+  /me:
+    get:
+      tags: [F1 me]
+      summary: 내 프로필 (첫 호출 시 자동 생성, 기본 role REQUESTER)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope_Me' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+    patch:
+      tags: [F1 me]
+      summary: 알림 동의 변경
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [notificationConsent]
+              additionalProperties: false
+              properties:
+                notificationConsent: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope_Me' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /places:
+    get:
+      tags: [F2 places]
+      summary: 장소 목록 (자유 입력 주소 없음, placeId 선택만 허용)
+      parameters:
+        - { name: query, in: query, schema: { type: string, maxLength: 100 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Place' }
+
+  /uploads/photo-url:
+    post:
+      tags: [F3 incidents]
+      summary: 피해 사진 staging 업로드용 signed URL (REQUESTER)
+      description: |
+        `staging/{userId}/{uuid}.{ext}` 경로로 signed upload URL 을 발급한다. 업로드 후 `POST /incidents` 의
+        `photoObjectPaths` 에 넘기면 사고 경로로 이동·메타데이터 제거 후 연결된다. 24h(STAGING_RETENTION_HOURS) 내
+        연결되지 않은 객체는 자동 삭제. Supabase signed upload URL 은 2시간 고정이므로 `expiresAt` 은 스토리지 값이다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mime, bytes]
+              additionalProperties: false
+              properties:
+                mime: { type: string, enum: [image/jpeg, image/png, image/webp] }
+                bytes: { type: integer, minimum: 1 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data: { $ref: '#/components/schemas/SignedUpload' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+        '413': { description: FILE_TOO_LARGE }
+        '415': { description: UNSUPPORTED_MEDIA_TYPE }
+
+  /incidents:
+    post:
+      tags: [F3 incidents]
+      summary: 사고 요청 등록 (REQUESTER) → 예치(Mock) 기록 → F4 매칭·알림
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IncidentCreate' }
+      responses:
+        '201':
+          description: 'Created. 매칭 결과 포함. 커밋 후 DTO 생성이 실패하면 `{ id, status, matching, partial: true }` 만 반환.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/IncidentOwner'
+                          - properties:
+                              matching: { $ref: '#/components/schemas/MatchingResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+        '415': { description: staging 사진 MIME/시그니처 불일치 }
+
+  /me/incidents:
+    get:
+      tags: [F3 incidents]
+      summary: 내 사고 요청 목록 (REQUESTER)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/IncidentOwner' }
+
+  /incidents/{id}:
+    get:
+      tags: [F3 incidents]
+      summary: 사고 요청 상세. 소유자/OPERATOR 는 전체, 알림 받은 Y 는 마스킹 DTO
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        oneOf:
+                          - $ref: '#/components/schemas/IncidentOwner'
+                          - $ref: '#/components/schemas/IncidentWitnessView'
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /me/notifications:
+    get:
+      tags: [F4 notifications]
+      summary: 내 알림 (keyset 페이지네이션, meta.nextCursor / meta.unreadCount)
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Notification' }
+                      meta:
+                        properties:
+                          nextCursor: { type: [string, 'null'] }
+                          unreadCount: { type: integer }
+  /notifications/{id}/read:
+    post:
+      tags: [F4 notifications]
+      summary: 읽음 처리 (멱등)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data: { $ref: '#/components/schemas/Notification' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /me/visits:
+    get:
+      tags: [F4 notifications]
+      summary: 내 방문 기록 (WITNESS, seed 확인·삭제용)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Visit' }
+  /me/visits/{id}:
+    delete:
+      tags: [F4 notifications]
+      summary: 방문 기록 삭제 (WITNESS)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: '`{ data: { id, deleted: true } }`' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /incidents/{id}/submissions:
+    post:
+      tags: [F5 submissions]
+      summary: 증거 영상 제보 생성 + signed upload URL (WITNESS, 알림 받은 사고만)
+      description: |
+        사고당 제보자 1건. 이미 `UPLOADING`/`ANALYSIS_FAILED` 인 제보가 있으면 같은 행으로 URL 을 재발급(200)하고,
+        그 외 상태면 409 `ALREADY_EXISTS`. 동시 요청은 `ON CONFLICT DO NOTHING` 으로 하나만 생성된다.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mime, bytes]
+              additionalProperties: false
+              properties:
+                mime: { type: string, enum: [video/mp4] }
+                bytes: { type: integer, minimum: 1 }
+                durationSec: { type: number, exclusiveMinimum: 0, maximum: 86400 }
+                recordedAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data: { $ref: '#/components/schemas/SubmissionUpload' }
+        '200': { description: 기존 UPLOADING/ANALYSIS_FAILED 제보의 URL 재발급 }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+        '404': { description: 알림을 받지 않은 사고 }
+        '409': { description: ALREADY_EXISTS / INVALID_STATE }
+        '413': { description: FILE_TOO_LARGE }
+        '415': { description: UNSUPPORTED_MEDIA_TYPE }
+        '422': { description: VIDEO_UNANALYZABLE (선언한 durationSec 이 허용 범위 밖) }
+
+  /submissions/{id}/complete-upload:
+    post:
+      tags: [F5 submissions]
+      summary: 업로드 완료 확정 (WITNESS). 객체 존재·MIME·MP4 헤더(길이/해상도)·sha256 검증 → UPLOADED
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data: { $ref: '#/components/schemas/Submission' }
+        '409': { description: 'INVALID_STATE (UPLOADING 이 아님 / 객체가 아직 없음: message 가 UPLOAD_NOT_FOUND 로 시작)' }
+        '413': { description: FILE_TOO_LARGE (실제 객체 크기) }
+        '415': { description: UNSUPPORTED_MEDIA_TYPE (객체 content-type 이 video/mp4 아님) }
+        '422': { description: 'VIDEO_UNANALYZABLE (MP4 헤더에서 길이/해상도를 읽을 수 없거나 길이가 허용 범위 밖)' }
+
+  /submissions/{id}:
+    get:
+      tags: [F5 submissions]
+      summary: 제보 상세 (제보자, 해당 X, OPERATOR). X 에게 제보자는 `maskedId` 로만 보임
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data: { $ref: '#/components/schemas/Submission' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /submissions/{id}/video-url:
+    get:
+      tags: [F5 submissions]
+      summary: 원본 영상 signed URL (제보자 항상, X 는 READY+incidentDetected 이후, OPERATOR)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          url: { type: string }
+                          expiresAt: { type: string, format: date-time }
+                          mime: { type: string }
+                          sha256: { type: [string, 'null'] }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: INVALID_STATE }
+
+  /submissions/{id}/analyze:
+    post:
+      tags: [F6 analysis]
+      summary: 분석 요청 (제보자, 해당 X, OPERATOR). UPLOADED/ANALYSIS_FAILED → ANALYZING, 큐에 적재
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '202':
+          description: 'Accepted. 진행 중인 분석이 있으면 같은 id 와 `existing: true`'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          analysisId: { type: string, format: uuid }
+                          status: { $ref: '#/components/schemas/AnalysisStatus' }
+                          existing: { type: boolean }
+        '409': { description: INVALID_STATE }
+  /submissions/{id}/analyze/retry:
+    post:
+      tags: [F6 analysis]
+      summary: 실패한 분석 재시도 (analyze 와 동일 규칙)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '202': { description: Accepted }
+        '409': { description: INVALID_STATE }
+  /submissions/{id}/analysis:
+    get:
+      tags: [F6 analysis]
+      summary: 분석 상태·결과
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data: { $ref: '#/components/schemas/Analysis' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /incidents/{id}/candidates:
+    get:
+      tags: [F7 candidates]
+      summary: 사고 후보 목록 (해당 X, OPERATOR). READY + incidentDetected=true 제보만
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Candidate' }
+                      meta:
+                        properties:
+                          total: { type: integer, description: 이 사고의 전체 제보 수 }
+                          noCandidateCount: { type: integer, description: 분석 완료됐지만 incidentDetected=false 인 제보 수 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /submissions/{id}/submit-to-insurer:
+    post:
+      tags: [F8 insurer (mock)]
+      summary: 보험사 제출 (해당 X / OPERATOR). READY + incidentDetected=true 만
+      description: |
+        트랜잭션으로 `insurer_reviews(REVIEWING)` 생성, submission → `SUBMITTED`, incident → `REVIEWING`,
+        settlement → `ADOPTION_PENDING`. 응답의 `integrity.sha256` 은 업로드 시 계산한 원본 영상 해시.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data: { $ref: '#/components/schemas/InsurerReview' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: INVALID_STATE (READY 아님 / NO_CANDIDATE) 또는 ALREADY_EXISTS }
+  /submissions/{id}/insurer-decision:
+    post:
+      tags: [F8 insurer (mock)]
+      summary: 채택/미채택 결정 (OPERATOR, 또는 DEMO_MODE=true 일 때 해당 X). 단방향, 재결정 불가
+      description: |
+        `ADOPTED`: submission·incident → `ADOPTED`, settlement → `PAYOUT_SCHEDULED`(dedupe_key = incidentId:submissionId),
+        Y 에게 `ADOPTION_UPDATED` + `REWARD_SCHEDULED`. `REJECTED`: submission → `REJECTED`, incident → `COLLECTING`,
+        settlement → `DEPOSITED`, Y 에게 `ADOPTION_UPDATED`. AI 점수로 자동 채택하지 않는다.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              additionalProperties: false
+              properties:
+                decision: { type: string, enum: [ADOPTED, REJECTED] }
+                note: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/InsurerReview'
+                          - properties:
+                              settlement:
+                                oneOf: [{ $ref: '#/components/schemas/Settlement' }, { type: 'null' }]
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: INVALID_STATE (미제출 / 이미 결정) }
+  /submissions/{id}/insurer-review:
+    get:
+      tags: [F8 insurer (mock)]
+      summary: 보험사 검토 상태 (해당 X, 제보자, OPERATOR)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data: { $ref: '#/components/schemas/InsurerReview' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /incidents/{id}/settlement:
+    get:
+      tags: [F9 settlement (mock)]
+      summary: 정산 상태 (해당 X, OPERATOR)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data: { $ref: '#/components/schemas/Settlement' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /me/rewards:
+    get:
+      tags: [F9 settlement (mock)]
+      summary: 내가 받을 보상 목록 (WITNESS)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Reward' }
+        '403': { $ref: '#/components/responses/ForbiddenRole' }
+
+  /demo/accounts:
+    get:
+      tags: [F10 demo]
+      security: []
+      summary: 데모 계정 이메일 (DEMO_MODE=true 에서만 존재, 비밀번호 미포함)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          requester: { $ref: '#/components/schemas/DemoAccount' }
+                          witness: { $ref: '#/components/schemas/DemoAccount' }
+                          demoDate: { type: string, example: '2026-09-09' }
+                          timeZone: { type: string, example: Asia/Seoul }
+        '401': { description: DEMO_MODE=false 이면 라우터 미등록 → 인증 라우터로 떨어져 401/404 }
+  /demo/reset:
+    post:
+      tags: [F10 demo]
+      security: []
+      summary: 데모 계정 데이터 초기화 (DEMO_MODE=true + X-Demo-Admin-Token)
+      description: |
+        데모 계정의 incidents/incident_photos/submissions/analyses/insurer_reviews/settlements/notifications 삭제(FK cascade),
+        해당 Storage 객체와 `staging/{userId}/` 삭제, Y 방문 이력을 DEMO_DATE 기준으로 재삽입. `places` 유지.
+        다른 사용자의 데이터는 건드리지 않는다.
+      parameters:
+        - { name: X-Demo-Admin-Token, in: header, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          incidentsDeleted: { type: integer }
+                          submissionsDeleted: { type: integer }
+                          notificationsDeleted: { type: integer }
+                          visitsDeleted: { type: integer }
+                          storageObjectsRemoved: { type: integer }
+                          storageErrors: { type: integer }
+                          demoDate: { type: string }
+                          seededVisit: { type: boolean }
+                          accountsFound: { type: integer }
+        '401': { description: 토큰 불일치 }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT, description: Supabase access token }
+
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+
+  responses:
+    Unauthenticated:
+      description: UNAUTHENTICATED
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    ForbiddenRole:
+      description: FORBIDDEN_ROLE
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    NotFound:
+      description: NOT_FOUND (접근 권한 없는 리소스도 404)
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    ValidationError:
+      description: VALIDATION_ERROR (details 에 zod issues)
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        data: {}
+        meta:
+          type: object
+          properties:
+            requestId: { type: string }
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable]
+          properties:
+            code: { $ref: '#/components/schemas/ErrorCode' }
+            message: { type: string }
+            retryable: { type: boolean }
+            details: {}
+        meta:
+          type: object
+          properties:
+            requestId: { type: string }
+    ErrorCode:
+      type: string
+      enum:
+        - VALIDATION_ERROR      # 400
+        - UNAUTHENTICATED       # 401
+        - FORBIDDEN_ROLE        # 403
+        - NOT_FOUND             # 404
+        - INVALID_STATE         # 409
+        - ALREADY_EXISTS        # 409
+        - FILE_TOO_LARGE        # 413
+        - UNSUPPORTED_MEDIA_TYPE # 415
+        - VIDEO_UNANALYZABLE    # 422 (too short/long, unreadable MP4 header)
+        - RATE_LIMITED          # 429
+        - INTERNAL_ERROR        # 500
+        - PROVIDER_UNAVAILABLE  # 503
+
+    Envelope_PublicConfig:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            data: { $ref: '#/components/schemas/PublicConfig' }
+    PublicConfig:
+      type: object
+      properties:
+        demoMode: { type: boolean }
+        aiMode: { type: string, enum: [live, fake] }
+        provider: { type: string, example: twelvelabs }
+        model: { type: string, example: pegasus1.5 }
+        promptVersion: { type: string, example: v1 }
+        limits:
+          type: object
+          properties:
+            photoMaxBytes: { type: integer }
+            photoMaxCount: { type: integer }
+            photoMimeTypes: { type: array, items: { type: string } }
+            videoMaxBytes: { type: integer }
+            videoMinSeconds: { type: number }
+            videoMaxSeconds: { type: number }
+            videoMimeTypes: { type: array, items: { type: string } }
+        features:
+          type: object
+          properties:
+            prerecordedFallback: { type: boolean }
+            referenceImages: { type: boolean }
+        matching:
+          type: object
+          properties: { timePaddingMinutes: { type: integer } }
+        settlement: { $ref: '#/components/schemas/SettlementConfig' }
+    SettlementConfig:
+      type: object
+      properties:
+        depositAmount: { type: integer, example: 100000 }
+        platformFee: { type: integer, example: 20000 }
+        witnessReward: { type: integer, example: 80000 }
+        disputeWindowHours: { type: integer, example: 72 }
+        mock: { type: boolean, const: true }
+
+    Role: { type: string, enum: [REQUESTER, WITNESS, OPERATOR] }
+    Envelope_Me:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            data: { $ref: '#/components/schemas/Me' }
+    Me:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        role: { $ref: '#/components/schemas/Role' }
+        displayName: { type: string }
+        email: { type: [string, 'null'] }
+        notificationConsent: { type: boolean }
+        payoutReady: { type: boolean }
+        unreadNotificationCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    Place:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: A주차장 }
+        kind: { type: string, enum: [PARKING_LOT, APARTMENT, BUILDING] }
+        address: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+
+    SignedUpload:
+      type: object
+      properties:
+        objectPath: { type: string }
+        uploadUrl: { type: string }
+        token: { type: string }
+        expiresAt: { type: string, format: date-time, description: 스토리지가 실제로 강제하는 만료 시각 }
+
+    IncidentType: { type: string, enum: [HIT_AND_RUN, CONTACT, DAMAGE, OTHER] }
+    IncidentStatus: { type: string, enum: [DRAFT, OPEN, COLLECTING, REVIEWING, ADOPTED, CLOSED_NO_EVIDENCE, CANCELLED] }
+    Vehicle:
+      type: object
+      required: [color, model, damageArea]
+      properties:
+        color: { type: string, maxLength: 50 }
+        model: { type: string, maxLength: 100 }
+        damageArea: { type: string, maxLength: 100 }
+    IncidentCreate:
+      type: object
+      required: [placeId, type, occurredFrom, occurredTo, vehicle, description, consent]
+      additionalProperties: false
+      properties:
+        placeId: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/IncidentType' }
+        occurredFrom: { type: string, format: date-time }
+        occurredTo: { type: string, format: date-time, description: occurredFrom 이후, 최대 24h 창 }
+        vehicle: { $ref: '#/components/schemas/Vehicle' }
+        description: { type: string, maxLength: 1000 }
+        photoObjectPaths:
+          type: array
+          maxItems: 10
+          items: { type: string }
+          description: '`POST /uploads/photo-url` 로 받은 staging 경로 (본인 것만)'
+        consent:
+          type: object
+          required: [evidenceUse, privacy]
+          properties:
+            evidenceUse: { type: boolean, const: true }
+            privacy: { type: boolean, const: true }
+    Photo:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        position: { type: integer }
+        mime: { type: string }
+        width: { type: integer }
+        height: { type: integer }
+        url: { type: [string, 'null'], description: signed URL (스토리지 장애 시 null) }
+        expiresAt: { type: [string, 'null'], format: date-time }
+    MatchingResult:
+      type: object
+      properties:
+        matchedWitnessCount: { type: integer }
+        notifiedAt: { type: [string, 'null'], format: date-time }
+    IncidentOwner:
+      type: object
+      description: 소유자(X)/OPERATOR 용
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/IncidentStatus' }
+        reviewMode: { type: string, example: AUTO_DEMO }
+        type: { $ref: '#/components/schemas/IncidentType' }
+        place: { $ref: '#/components/schemas/Place' }
+        occurredFrom: { type: string, format: date-time }
+        occurredTo: { type: string, format: date-time }
+        vehicle: { $ref: '#/components/schemas/Vehicle' }
+        description: { type: string }
+        photos: { type: array, items: { $ref: '#/components/schemas/Photo' } }
+        matchedWitnessCount: { type: integer }
+        submissions:
+          type: object
+          properties:
+            total: { type: integer }
+            ready: { type: integer }
+        settlement:
+          oneOf: [{ $ref: '#/components/schemas/Settlement' }, { type: 'null' }]
+        publishedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    IncidentWitnessView:
+      type: object
+      description: 알림을 받은 Y 용 마스킹 DTO (요청자 신원·연락처 없음)
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/IncidentStatus' }
+        type: { $ref: '#/components/schemas/IncidentType' }
+        place: { $ref: '#/components/schemas/Place' }
+        occurredFrom: { type: string, format: date-time }
+        occurredTo: { type: string, format: date-time }
+        vehicle: { $ref: '#/components/schemas/Vehicle' }
+        descriptionSummary: { type: string, maxLength: 201 }
+        photos:
+          type: array
+          items:
+            type: object
+            properties:
+              position: { type: integer }
+              url: { type: [string, 'null'] }
+              width: { type: integer }
+              height: { type: integer }
+        rewardPreview:
+          type: object
+          properties:
+            amount: { type: integer, example: 80000 }
+            mock: { type: boolean, const: true }
+        mySubmissionId: { type: [string, 'null'], format: uuid }
+        masked: { type: boolean, const: true }
+        createdAt: { type: string, format: date-time }
+
+    NotificationType: { type: string, enum: [WITNESS_REQUEST, CANDIDATE_FOUND, NO_CANDIDATE, ADOPTION_UPDATED, REWARD_SCHEDULED] }
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/NotificationType' }
+        title: { type: string }
+        body: { type: string, description: 이름·연락처·차량번호 미포함 }
+        incidentId: { type: [string, 'null'], format: uuid }
+        submissionId: { type: [string, 'null'], format: uuid }
+        readAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+    Visit:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        place:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+        enteredAt: { type: string, format: date-time }
+        exitedAt: { type: string, format: date-time }
+        source: { type: string, enum: [SEED, MANUAL] }
+        retainUntil: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    SubmissionStatus:
+      type: string
+      enum: [UPLOADING, UPLOADED, ANALYZING, READY, ANALYSIS_FAILED, SUBMITTED, ADOPTED, REJECTED]
+    SubmissionUpload:
+      type: object
+      properties:
+        submissionId: { type: string, format: uuid }
+        incidentId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/SubmissionStatus' }
+        objectPath: { type: string, example: 'incidents/{incidentId}/submissions/{submissionId}/original.mp4' }
+        uploadUrl: { type: string }
+        token: { type: string }
+        expiresAt: { type: string, format: date-time }
+        limits:
+          type: object
+          properties:
+            maxBytes: { type: integer }
+            minSeconds: { type: number }
+            maxSeconds: { type: number }
+            mime: { type: string, const: video/mp4 }
+    Submission:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        incidentId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/SubmissionStatus' }
+        mime: { type: string }
+        bytes: { type: integer }
+        durationSec: { type: [number, 'null'] }
+        width: { type: [integer, 'null'] }
+        height: { type: [integer, 'null'] }
+        sha256: { type: [string, 'null'] }
+        recordedAt: { type: [string, 'null'], format: date-time }
+        uploadCompletedAt: { type: [string, 'null'], format: date-time }
+        objectPath: { type: string, description: 제보자 본인/OPERATOR 에게만 }
+        witness:
+          type: object
+          properties:
+            self: { type: boolean }
+            maskedId: { type: string, example: '제보자 #1' }
+        redactionApplied: { type: boolean, const: false }
+        humanReviewed: { type: boolean, const: false }
+        analysis:
+          oneOf: [{ $ref: '#/components/schemas/Analysis' }, { type: 'null' }]
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    AnalysisStatus: { type: string, enum: [QUEUED, ANALYZING, FINALIZING, READY, FAILED] }
+    AnalysisSource: { type: [string, 'null'], enum: [LIVE, PRERECORDED, null] }
+    AnalysisResult:
+      type: object
+      description: 서버 정규화 결과. `incidentDetected=false` 이면 `incidentTimestampSeconds` 는 null.
+      properties:
+        incidentDetected: { type: boolean }
+        incidentTimestampSeconds: { type: [number, 'null'] }
+        incidentTimestampLabel: { type: [string, 'null'], example: '00:12' }
+        victimVehicle: { type: [string, 'null'] }
+        otherVehicle: { type: [string, 'null'] }
+        event: { type: [string, 'null'] }
+        relevance: { type: string, enum: [HIGH, MEDIUM, LOW] }
+        evidence: { type: array, items: { type: string } }
+        videoDurationSec: { type: [number, 'null'] }
+        disclaimer: { type: string }
+    Analysis:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        submissionId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/AnalysisStatus' }
+        source: { $ref: '#/components/schemas/AnalysisSource' }
+        result:
+          oneOf: [{ $ref: '#/components/schemas/AnalysisResult' }, { type: 'null' }]
+        error:
+          oneOf:
+            - type: object
+              properties:
+                code: { type: string, enum: [TIMEOUT, PROVIDER_UNAVAILABLE, PROVIDER_REJECTED, INVALID_RESPONSE] }
+                message: { type: [string, 'null'] }
+            - type: 'null'
+        attempts: { type: integer }
+        model: { type: [string, 'null'] }
+        promptVersion: { type: [string, 'null'] }
+        provider: { type: [string, 'null'] }
+        startedAt: { type: [string, 'null'], format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Candidate:
+      type: object
+      properties:
+        submissionId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/SubmissionStatus' }
+        analysis:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            source: { $ref: '#/components/schemas/AnalysisSource' }
+            result: { $ref: '#/components/schemas/AnalysisResult' }
+            model: { type: [string, 'null'] }
+            promptVersion: { type: [string, 'null'] }
+            finishedAt: { type: [string, 'null'], format: date-time }
+        videoUrl: { type: [string, 'null'], description: 원본 영상 signed URL (스토리지 장애 시 null) }
+        video:
+          type: object
+          properties:
+            url: { type: [string, 'null'] }
+            mime: { type: string }
+            durationSec: { type: [number, 'null'] }
+            sha256: { type: [string, 'null'] }
+            expiresAt: { type: [string, 'null'], format: date-time }
+        witness:
+          type: object
+          properties: { maskedId: { type: string, example: '제보자 #1' } }
+        insurerReview:
+          oneOf: [{ $ref: '#/components/schemas/InsurerReview' }, { type: 'null' }]
+        createdAt: { type: string, format: date-time }
+
+    InsurerReviewStatus: { type: string, enum: [REVIEWING, ADOPTED, REJECTED] }
+    InsurerReview:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        submissionId: { type: string, format: uuid }
+        incidentId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/InsurerReviewStatus' }
+        submittedAt: { type: string, format: date-time }
+        decidedAt: { type: [string, 'null'], format: date-time }
+        note: { type: [string, 'null'] }
+        integrity:
+          type: object
+          properties:
+            sha256: { type: [string, 'null'] }
+            submittedAt: { type: string, format: date-time }
+        mock: { type: boolean, const: true }
+        label: { type: string, const: 데모 보험사 채택 }
+
+    SettlementStatus:
+      type: string
+      enum: [DEPOSIT_PENDING, DEPOSITED, ADOPTION_PENDING, PAYOUT_SCHEDULED, PAID, REFUNDED, PAYOUT_FAILED, DISPUTED]
+    Settlement:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        incidentId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/SettlementStatus' }
+        depositAmount: { type: integer, example: 100000 }
+        platformFee: { type: integer, example: 20000 }
+        witnessReward: { type: integer, example: 80000 }
+        payoutScheduledAt: { type: [string, 'null'], format: date-time }
+        mock: { type: boolean, const: true }
+        label: { type: string, const: '데모: 실제 결제·송금 없음' }
+    Reward:
+      type: object
+      properties:
+        incidentId: { type: string, format: uuid }
+        submissionId: { type: [string, 'null'], format: uuid }
+        placeName: { type: string }
+        amount: { type: integer, example: 80000 }
+        status: { $ref: '#/components/schemas/SettlementStatus' }
+        scheduledAt: { type: [string, 'null'], format: date-time }
+        mock: { type: boolean, const: true }
+        label: { type: string, const: '데모: 실제 송금 없음' }
+
+    DemoAccount:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        displayName: { type: string }
+        role: { $ref: '#/components/schemas/Role' }

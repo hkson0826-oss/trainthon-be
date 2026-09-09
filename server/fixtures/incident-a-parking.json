@@ -1,0 +1,11 @@
+{
+  "placeId": "11111111-1111-4111-8111-111111111111",
+  "placeName": "A주차장",
+  "type": "HIT_AND_RUN",
+  "occurredFrom": "{DEMO_DATE}T14:00:00+09:00",
+  "occurredTo": "{DEMO_DATE}T14:10:00+09:00",
+  "vehicle": { "color": "흰색", "model": "세단(아반떼)", "damageArea": "우측 후면 범퍼" },
+  "description": "지하 2층에 주차하고 40분 뒤 돌아왔는데 우측 뒤 범퍼가 긁혀 있고 검은색 페인트가 묻어 있었습니다. 상대 차량은 없었습니다.",
+  "photoFiles": ["victim-01-rear-right.jpg", "victim-02-side.jpg"],
+  "consent": { "evidenceUse": true, "privacy": true }
+}
