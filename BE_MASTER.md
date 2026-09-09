@@ -24,10 +24,10 @@ PRODUCT_CONTRACT.md, FE_MASTER.md, START_HERE.md에 남아 있는 유료 찾기�
 
 ## 2. 구현 기반
 
-Express 5, TypeScript strict, ESM, SQLite WAL과 migration, 런타임 입력 검증, Firebase Admin 인증, 서버 측 AI adapter, 광고 완료 검증 adapter, 파일 저장소, 내장 작업 worker, OpenAPI를 사용한다. SQLite는 단일 서버와 영속 디스크를 전제로 한다.
+Express 5, TypeScript strict, ESM, SQLite WAL과 migration, 런타임 입력 검증, Supabase Auth 인증, 서버 측 AI adapter, 광고 완료 검증 adapter, 파일 저장소, 내장 작업 worker, OpenAPI를 사용한다. SQLite는 단일 서버와 영속 디스크를 전제로 한다.
 
 - 기존 server/를 확장하고 FE 프로젝트를 재생성하지 않는다.
-- Firebase는 로그인 신원 확인에 사용하고, 도메인 데이터의 원본은 서버 뒤의 SQLite로 둔다.
+- Supabase Auth는 로그인 신원 확인에만 사용하고, 도메인 데이터의 원본은 서버 뒤의 SQLite로 둔다. 습득물·검색·광고 세션을 Supabase Postgres나 Storage로 이전하지 않는다.
 - AI 비밀 키와 광고 검증 자격증명은 서버에서만 사용한다.
 - 앱 시작마다 DB를 초기화하거나 demo seed를 자동 실행하지 않는다.
 - 실제 외부 공급자와 테스트용 adapter를 구분한다. demo 결과만으로 실제 AI 검색 완료를 주장하지 않는다.
@@ -80,7 +80,9 @@ MVP 기본 동작은 확정된 입력 한 건에 대한 1회 검색이다. 새 �
 
 ## 4. 인증과 접근 권한
 
-실제 로그인은 Firebase Auth Google 로그인을 유지한다. FE가 Authorization: Bearer Firebase ID token을 전달하면 Admin SDK로 서명·만료·대상 프로젝트를 검증하고 Firebase UID를 내부 user ID에 매핑한다. 실패하면 401을 반환하며 demo로 전환하지 않는다. 학교 소속 인증은 이번 범위에 없다.
+실제 로그인은 Supabase Auth Kakao 로그인을 사용한다. FE가 Authorization: Bearer로 Supabase access token(JWT)을 전달하면 서버가 서명·만료·issuer(프로젝트 Auth URL)·audience를 검증하고 Supabase user UUID(`sub`)를 내부 user ID에 매핑한다. 실패하면 401을 반환하며 demo로 전환하지 않는다. 학교 소속 인증은 이번 범위에 없다.
+
+토큰 검증은 `@supabase/supabase-js`의 `auth.getUser(jwt)` 또는 `auth.getClaims()`, 또는 프로젝트 JWKS(`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`)로 수행한다. JWT payload만 디코드하거나 FE가 보낸 user id를 그대로 신뢰하지 않는다. 서비스 롤 키와 JWT 비밀은 서버에서만 사용한다. users 행은 `auth_provider='supabase'`, `provider_uid`=Supabase Auth user UUID로 저장한다.
 
 AUTH_MODE=demo는 로컬 개발용으로만 지원하고, 분실자와 습득자 테스트 계정의 서버 검증 가능한 토큰을 사용한다. 토큰 부재나 임의 userId 헤더를 로그인으로 간주하지 않는다.
 
@@ -255,7 +257,8 @@ DATABASE_PATH=./data/lumina.sqlite
 UPLOAD_DIR=./data/uploads
 CORS_ORIGINS=http://localhost:3000
 PUBLIC_APP_URL=http://localhost:3000
-FIREBASE_PROJECT_ID=
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
 GEMINI_MODEL=
 GEMINI_API_KEY=
 ADS_PROVIDER=
@@ -263,7 +266,7 @@ ADS_PLACEMENT_ID=
 ADS_SESSION_TTL_SECONDS=
 ```
 
-위 예시는 로컬 테스트용이다. 실제 MVP 검증에는 AUTH_MODE=firebase, AI_MODE=live, ADS_MODE=live와 해당 공급자의 구성을 사용한다. 광고 서명 검증 키·공급자 API 자격증명 등은 선정한 공급자의 방식에 따라 필요한 값만 추가한다. Firebase Admin 자격증명은 SDK 기본 인증 경로나 secret manager로 공급한다. 서버 비밀을 VITE_ 변수에 넣지 않는다.
+위 예시는 로컬 테스트용이다. 실제 MVP 검증에는 AUTH_MODE=supabase, AI_MODE=live, ADS_MODE=live와 해당 공급자의 구성을 사용한다. 광고 서명 검증 키·공급자 API 자격증명 등은 선정한 공급자의 방식에 따라 필요한 값만 추가한다. Supabase 서비스 롤 키와 JWT 검증 비밀은 env 또는 secret manager로 공급한다. FE에는 publishable(anon) 키와 프로젝트 URL만 두고, 서비스 롤 키를 VITE_ 변수에 넣지 않는다. Kakao 제공자는 Supabase Auth 대시보드와 Kakao Developers에서 활성화한다. 서버는 Kakao access token을 직접 검증하지 않고, FE가 받은 Supabase JWT만 검증한다.
 
 live 설정이 부족하면 startup validation 또는 해당 capability에서 명확히 실패하며 demo로 자동 전환하지 않는다. maps capability는 지도용 데이터 API 제공 여부를 의미하며 FE 지도 SDK가 준비되었다는 뜻은 아니다. 결제·웹훅 결제 비밀 키·지급 설정은 이번 MVP에 필요하지 않다.
 
@@ -325,7 +328,7 @@ Lumina 백엔드 MVP를 구현하고 검증하라. 사용자 확정 흐름인 BE
 
 기존 PRODUCT_CONTRACT.md 등의 결제·환불·반환·정산·7일 검색 요구가 충돌하면 최신 BE_MASTER.md를 따르고 공통 계약과 OpenAPI를 새 MVP에 맞춰 정리하라. 제외된 기능을 구현 범위에 되살리지 마라. 기존 데이터와 사용자 변경을 보존하라.
 
-Express/TypeScript/SQLite/Firebase Auth 기반으로 기존 server/를 확장하라. 실제 AI와 광고 adapter, 테스트용 demo adapter를 구분하라. 실제 공급자와 설정이 없으면 로컬 검증은 진행하되 실제 연결 미완료를 명확히 보고하라.
+Express/TypeScript/SQLite/Supabase Auth 기반으로 기존 server/를 확장하라. 실제 AI와 광고 adapter, 테스트용 demo adapter를 구분하라. 실제 공급자와 설정이 없으면 로컬 검증은 진행하되 실제 연결 미완료를 명확히 보고하라.
 
 의미 있는 API·권한·경합 테스트, typecheck/build와 FE 통합 검증을 수행하라. 실행 README·환경 예시·fixture·API 문서를 제공하고 구현 범위, 검증 결과, 실행법, 외부 연동에 남은 항목을 보고하라.
 ```
