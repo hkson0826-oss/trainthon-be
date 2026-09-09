@@ -1,13 +1,5 @@
-# Lumina BE 개발 에이전트 최상위 실행 명세
-
-> 용도: 간소화된 MVP를 구현하기 위한 백엔드 개발 지시서다. 구현이나 외부 서비스 연동이 이미 완료되었다는 뜻이 아니다.
-> 개정 기준: 2026-09-09. 사용자가 확정한 3절의 MVP 사용자 흐름이 모든 백엔드 요구사항의 절대적인 제품 기준이다.
-> 참조 저장소: https://github.com/Icey067/Lumina.git. 기존 문서의 원본 구조 설명은 참고이며 실제 구현 시 현재 checkout을 확인한다.
-
 ## 1. 임무와 우선순위
-
-Lumina MVP는 무료 습득 등록, 광고 시청 완료 후 실제 AI 찾기, 지도에서 위치 확인을 제공한다. 백엔드는 로그인 검증, 파일 검증과 저장, 습득물 AI 정보 추출, 검색 초안 저장, 광고 완료 검증, 실제 AI 매칭, 목록·지도용 공개 위치 데이터 제공을 책임진다.
-
+무료 습득 등록, 광고 시청 완료 후 실제 AI 찾기, 지도에서 위치 확인을 제공한다. 백엔드는 로그인 검증, 파일 검증과 저장, 습득물 AI 정보 추출, 검색 초안 저장, 광고 완료 검증, 실제 AI 매칭, 목록·지도용 공개 위치 데이터 제공을 책임진다.
 
 PRODUCT_CONTRACT.md, FE_MASTER.md, START_HERE.md에 남아 있는 유료 찾기·반환·정산 요구가 이 문서와 충돌하면 이 문서의 최신 MVP 기준을 적용한다. 공통 계약이 이전 버전이라는 이유로 제거된 기능을 다시 구현하지 않는다. 충돌하지 않는 공통 응답 형식과 관례는 재사용한다. 구현 시 변경된 API·DTO·enum을 공통 계약과 OpenAPI에 반영하고 FE 통합 차이를 명시한다. 이 개정은 BE_MASTER.md 두 사본을 대상으로 하며, 다른 문서가 이미 동기화되었다고 가정하지 않는다.
 
@@ -252,7 +244,7 @@ APP_MODE=demo
 AUTH_MODE=demo
 AI_MODE=demo
 ADS_MODE=demo
-DATABASE_PATH=./data/lumina.sqlite
+DATABASE_PATH=./data/trainthon.sqlite
 UPLOAD_DIR=./data/uploads
 CORS_ORIGINS=http://localhost:3000
 PUBLIC_APP_URL=http://localhost:3000
