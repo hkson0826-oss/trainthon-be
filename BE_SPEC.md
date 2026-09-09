@@ -400,7 +400,7 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 
 [지시]
 1. 영상에서 피해 차량으로 보이는 차량이 있는지, 다른 차량과 접촉·충돌·급정지·비정상 접근이 있는지 찾으세요.
-2. 가장 가능성이 높은 장면 하나의 시작 시각(초)을 incidentTimestampSeconds로 보고하세요. 없으면 incidentDetected=false로 두고 timestamp는 null로 두세요.
+2. 가장 가능성이 높은 장면 하나의 시작 시각(초)을 incidentTimestampSeconds로 보고하세요. 사고 후보 장면이 없으면 incidentDetected=false로 두고 incidentTimestampSeconds는 0으로 두세요.
 3. victimVehicle, otherVehicle은 색상과 차종 위주로 간단히 묘사하세요. 번호판은 읽지 마세요.
 4. relevance는 사고 요청과 장면의 일치 정도이며 HIGH/MEDIUM/LOW 중 하나입니다.
 5. evidence에는 요청 정보와 일치하는 근거를 한국어로 2~4개 적으세요. 관찰한 사실만 적고 가해자·과실을 단정하지 마세요.
@@ -414,18 +414,25 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
   "type": "object",
   "properties": {
     "incidentDetected": { "type": "boolean" },
-    "incidentTimestampSeconds": { "anyOf": [ { "type": "timestamp", "format": "seconds" }, { "type": "null" } ] },
+    "incidentTimestampSeconds": { "type": "timestamp", "format": "seconds" },
     "victimVehicle": { "type": "string" },
     "otherVehicle": { "anyOf": [ { "type": "string" }, { "type": "null" } ] },
     "event": { "type": "string" },
     "relevance": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
     "evidence": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
   },
-  "required": ["incidentDetected", "victimVehicle", "event", "relevance", "evidence"]
+  "required": ["incidentDetected", "incidentTimestampSeconds", "victimVehicle", "event", "relevance", "evidence"]
 }
 ```
 
-> 주의: `timestamp` 타입이 `anyOf` 안에서 거부될 경우(HTTP 400) `incidentTimestampSeconds`를 `{"type":"number"}`로 바꾸고 미탐지 시 `-1`을 받도록 프롬프트를 조정한 뒤 서버에서 `null`로 정규화한다. 구현 시 실제 응답으로 확인하고 채택한 스키마를 `fixtures/twelvelabs-schema.v1.json`에 고정한다.
+**스키마 설계 근거 (TwelveLabs `json_schema` 제약)**
+
+- `timestamp`는 TwelveLabs 전용 타입이다. 모델이 "영상 안의 시각"을 지정한 형식(`seconds` → JSON number, `hh:mm:ss` → 문자열)으로 돌려주며, 일반 `number`로 받는 것보다 영상 타임라인과 정렬이 잘 된다.
+- 문서상 `timestamp`는 **스키마 최상위 속성** 또는 **배열 항목 객체의 1단계 속성**에만 둘 수 있다. `anyOf`/`oneOf`/`allOf` 안, `$ref` 안, 더 깊은 중첩에 두면 HTTP 400으로 거부된다. 그래서 `null`과의 `anyOf`로 "없음"을 표현할 수 없고, 대신 `incidentDetected=false`일 때 값을 무시하는 방식을 쓴다. 프롬프트도 그 경우 `0`을 쓰도록 지시한다.
+- 서버는 `incidentDetected=false`이면 `incidentTimestampSeconds`를 `null`로 정규화하고 `incidentTimestampLabel`도 `null`로 둔다. `true`인데 값이 `videoDurationSec`를 넘거나 음수면 `INVALID_RESPONSE`로 처리한다.
+- `additionalProperties`, `minLength`/`maxLength`, `maxItems`, `uniqueItems`는 422를 일으키므로 쓰지 않는다. `minItems`는 `0` 또는 `1`만 허용된다. `enum`은 string에 허용된다. 첫 속성(`incidentDetected`)은 반드시 `required`에 포함한다.
+- `start_time`/`end_time`은 예약된 속성명이므로 응답 스키마 필드명으로 쓰지 않는다.
+- 스키마 문제로 400/422가 나면 `json_schema` 없이 `prompt`만으로 JSON 텍스트를 받아 서버에서 파싱하는 경로를 최후 대안으로 두되, 채택한 최종 스키마는 `fixtures/twelvelabs-schema.v1.json`에 고정하고 `ANALYSIS_PROMPT_VERSION`을 올린다.
 
 **서버 저장 `result` 형식 (FE 계약)**
 
