@@ -378,6 +378,9 @@ Lumina 백엔드 MVP를 지금 구현하라. 이 메시지는 계획만 요청�
 Express5 TypeScript ESM과 SQLite WAL, Firebase Auth 신원 검증 adapter, 서버 저장/AI/payment/payout adapter, outbox와 migration을 사용하라. 공개 DTO와 비공개 증빙/보관 상세를 분리하라. 소유 확인 승인 전 상세 위치를 공개하지 마라. 분실자에게 발급한 code를 인증된 습득자가 consume하여 한 번만 반환하고, 원장·배분·작업 예약을 원자적으로 처리하라. provider idempotency와 UNIQUE 제약으로 중복 결제/환불/지급을 방지하라.
 
 문서의 구현 순서대로 작업하고 필요한 테스트와 typecheck/build를 실제 수행하라. 명시적 demo seed와 API 문서, 환경 예시, 실행 README를 제공하라. 완료 보고에는 구현 범위, 통과한 검증, 실행법, live 연결에 남은 항목을 구분하라. 환경상 불가능한 검증은 실행했다고 주장하지 마라.
+
+
+
 ```
 
 
