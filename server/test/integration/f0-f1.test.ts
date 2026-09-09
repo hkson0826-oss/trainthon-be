@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migrate, pendingMigrations } from '../../src/db/migrate.js';
@@ -17,6 +20,20 @@ describe('migrations', () => {
     const second = await migrate(ctx.db);
     expect(second.applied).toEqual([]);
     expect(await pendingMigrations(ctx.db)).toEqual([]);
+  });
+
+  it('treats CRLF and LF migration files as the same migration', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'lumina-migration-eol-'));
+    const file = path.join(dir, '9000_line_endings.sql');
+    try {
+      await writeFile(file, 'create table migration_eol_test (id integer);\r\n');
+      expect((await migrate(ctx.db, dir)).applied).toEqual(['9000_line_endings.sql']);
+
+      await writeFile(file, 'create table migration_eol_test (id integer);\n');
+      expect((await migrate(ctx.db, dir)).skipped).toEqual(['9000_line_endings.sql']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

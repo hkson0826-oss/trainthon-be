@@ -11,6 +11,18 @@ export interface AppliedMigration {
   checksum: string;
 }
 
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function migrationChecksums(sql: string): { canonical: string; compatible: Set<string> } {
+  const canonicalSql = sql.replace(/\r\n?/g, '\n');
+  return {
+    canonical: sha256(canonicalSql),
+    compatible: new Set([sha256(sql), sha256(canonicalSql), sha256(canonicalSql.replace(/\n/g, '\r\n'))]),
+  };
+}
+
 export async function listMigrationFiles(dir = MIGRATIONS_DIR): Promise<string[]> {
   const files = await readdir(dir);
   return files.filter((f) => f.endsWith('.sql')).sort();
@@ -37,10 +49,11 @@ const MIGRATION_LOCK_KEY = 7_248_113_901;
 export async function migrate(db: Db, dir = MIGRATIONS_DIR): Promise<{ applied: string[]; skipped: string[] }> {
   await ensureTable(db);
   const files = await listMigrationFiles(dir);
-  const contents = new Map<string, { sql: string; checksum: string }>();
+  const contents = new Map<string, { sql: string; checksum: string; compatibleChecksums: Set<string> }>();
   for (const file of files) {
     const sql = await readFile(path.join(dir, file), 'utf8');
-    contents.set(file, { sql, checksum: createHash('sha256').update(sql).digest('hex') });
+    const checksums = migrationChecksums(sql);
+    contents.set(file, { sql, checksum: checksums.canonical, compatibleChecksums: checksums.compatible });
   }
 
   return db.transaction(async (tx) => {
@@ -51,10 +64,12 @@ export async function migrate(db: Db, dir = MIGRATIONS_DIR): Promise<{ applied: 
     const applied: string[] = [];
     const skipped: string[] = [];
     for (const file of files) {
-      const { sql, checksum } = contents.get(file)!;
+      const { sql, checksum, compatibleChecksums } = contents.get(file)!;
       const prev = existing.get(file);
       if (prev) {
-        if (prev !== checksum) throw new Error(`Migration ${file} was modified after being applied (checksum mismatch)`);
+        if (!compatibleChecksums.has(prev)) {
+          throw new Error(`Migration ${file} was modified after being applied (checksum mismatch)`);
+        }
         skipped.push(file);
         continue;
       }
