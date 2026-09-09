@@ -75,6 +75,7 @@ export function candidatesRouter(deps: CandidatesDeps): Router {
             promptVersion: a.prompt_version,
             finishedAt: a.finished_at ? a.finished_at.toISOString() : null,
           },
+          videoUrl,
           video: { url: videoUrl, mime: s.mime, durationSec: s.duration_sec, sha256: s.sha256, expiresAt: videoUrl ? new Date(Date.now() + env.VIDEO_SIGNED_URL_TTL_SEC * 1000).toISOString() : null },
           witness: { maskedId: `제보자 #${witnessIndex}` },
           insurerReview: deps.insurerReview ? await deps.insurerReview(db, s.id) : null,

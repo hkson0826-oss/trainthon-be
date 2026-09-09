@@ -56,7 +56,10 @@ export class LiveTwelveLabsProvider implements AnalysisProvider {
     const mediaSources: MediaSource[] = photoUrls.map((url, i) => ({ name: `victim-photo-${i + 1}`, media_type: 'image', url }));
     const base64Eligible = input.submission.bytes > 0 && input.submission.bytes <= this.env.TWELVELABS_BASE64_MAX_BYTES;
 
+    const deadline = Date.now() + timeoutMs;
     const attempt = async (video: VideoSource) => {
+      const remaining = deadline - Date.now();
+      if (remaining < 1_000) throw new ProviderError('TIMEOUT', `No time budget left for provider call (${timeoutMs}ms)`);
       const req = buildAnalyzeRequest({
         model: this.env.TWELVELABS_MODEL,
         video,
@@ -65,7 +68,7 @@ export class LiveTwelveLabsProvider implements AnalysisProvider {
         temperature: this.env.ANALYSIS_TEMPERATURE,
         maxTokens: this.env.ANALYSIS_MAX_TOKENS,
       });
-      const res = await this.client.analyze(req, timeoutMs);
+      const res = await this.client.analyze(req, remaining);
       return { res, requestHash: hashAnalyzeRequest(req) };
     };
 

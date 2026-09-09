@@ -88,7 +88,12 @@ export async function requestAnalysis(
       promptVersion: env.ANALYSIS_PROMPT_VERSION,
       requestedBy: user.id,
     });
-    if (!analysis) throw ApiError.invalidState('Analysis already in progress');
+    if (!analysis) {
+      // Lost an insert race against another connection: return the winner's in-flight row (202).
+      const winner = await findAnalysisBySubmission(tx, current.id);
+      if (winner && IN_FLIGHT.includes(winner.status)) return { analysis: winner, existing: true };
+      throw ApiError.invalidState('Analysis state changed concurrently; retry');
+    }
     const moved = await transitionSubmission(tx, current.id, ['UPLOADED', 'ANALYSIS_FAILED'], 'ANALYZING');
     if (!moved) throw ApiError.invalidState('Submission state changed concurrently');
     await audit(tx, {

@@ -62,8 +62,10 @@ export class TwelveLabsClient implements AnalyzeClient {
 
   async analyze(req: AnalyzeRequest, timeoutMs: number): Promise<AnalyzeResponse> {
     const controller = new AbortController();
+    // The deadline covers headers *and* body: a provider that stalls mid-stream must not pin the worker.
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
+    let text: string;
     try {
       res = await this.fetchImpl(`${this.opts.baseUrl.replace(/\/+$/, '')}/analyze`, {
         method: 'POST',
@@ -71,6 +73,7 @@ export class TwelveLabsClient implements AnalyzeClient {
         body: JSON.stringify(req),
         signal: controller.signal,
       });
+      text = await res.text();
     } catch (err) {
       if (controller.signal.aborted) throw new ProviderError('TIMEOUT', `TwelveLabs request exceeded ${timeoutMs}ms`);
       throw new ProviderError('PROVIDER_UNAVAILABLE', `TwelveLabs request failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -78,7 +81,6 @@ export class TwelveLabsClient implements AnalyzeClient {
       clearTimeout(timer);
     }
 
-    const text = await res.text().catch(() => '');
     if (!res.ok) {
       const snippet = text.slice(0, 500);
       if (res.status === 429 || res.status >= 500) {

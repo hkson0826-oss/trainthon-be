@@ -8,7 +8,7 @@ import { PLACE_A, TOKENS, bearer, createTestContext, type TestContext } from '..
 const VIDEO_BUCKET = 'evidence-videos';
 const TL_URL = 'https://api.twelvelabs.io/v1.3/analyze';
 
-type Script = (body: Record<string, unknown>, call: number) => Response | Promise<Response>;
+type Script = (body: Record<string, unknown>, call: number, signal: AbortSignal | null) => Response | Promise<Response>;
 
 /** Scriptable stand-in for fetch: records request bodies and returns TwelveLabs-shaped responses. */
 function scriptedFetch() {
@@ -18,7 +18,7 @@ function scriptedFetch() {
     const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
     const headers = Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>));
     calls.push({ url: String(input), headers, body });
-    return script(body, calls.length);
+    return script(body, calls.length, init?.signal ?? null);
   };
   return { fetchImpl, calls, set: (s: Script) => (script = s) };
 }
@@ -142,7 +142,8 @@ describe('F6 analysis (live provider, scripted TwelveLabs) + F7 candidates', () 
       humanReviewed: false,
       insurerReview: null,
     });
-    expect(cands.body.data[0].video.url).toContain('original.mp4');
+    expect(cands.body.data[0].videoUrl).toContain('original.mp4');
+    expect(cands.body.data[0].video.url).toBe(cands.body.data[0].videoUrl);
     expect(JSON.stringify(cands.body)).not.toContain('박목격');
     expect((await request(ctx.app).get(`/api/v1/incidents/${incidentId}/candidates`).set(bearer(TOKENS.operator))).status).toBe(200);
     expect((await request(ctx.app).get(`/api/v1/incidents/${incidentId}/candidates`).set(bearer(TOKENS.witness))).status).toBe(404);
@@ -239,6 +240,48 @@ describe('F6 analysis (live provider, scripted TwelveLabs) + F7 candidates', () 
     expect((await request(ctx.app).post(`/api/v1/submissions/${submissionId}/analyze`).set(bearer(TOKENS.witness))).status).toBe(409);
     await ctx.db.query(`update evidence_submissions set status = 'UPLOADED' where id = $1`, [submissionId]);
     expect(incidentId).toBeDefined();
+  });
+
+  it('a provider that sends headers but stalls the body times out (TIMEOUT) instead of pinning the worker', async () => {
+    const { submissionId } = await setupIncidentWithUpload(ctx);
+    tl.set((_body, _call, signal) => {
+      // never closes; like real fetch, the body read rejects when the request signal aborts
+      const stalled = new ReadableStream<Uint8Array>({
+        start(c) {
+          signal?.addEventListener('abort', () => c.error(new DOMException('The operation was aborted.', 'AbortError')));
+        },
+      });
+      return new Response(stalled, { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    // shorten the budget for this case
+    const saved = ctx.env.ANALYSIS_TIMEOUT_MS;
+    (ctx.env as { ANALYSIS_TIMEOUT_MS: number }).ANALYSIS_TIMEOUT_MS = 1500;
+    try {
+      await request(ctx.app).post(`/api/v1/submissions/${submissionId}/analyze`).set(bearer(TOKENS.witness));
+      await ctx.analysis.queue.onIdle();
+    } finally {
+      (ctx.env as { ANALYSIS_TIMEOUT_MS: number }).ANALYSIS_TIMEOUT_MS = saved;
+    }
+    const a = await request(ctx.app).get(`/api/v1/submissions/${submissionId}/analysis`).set(bearer(TOKENS.witness));
+    expect(a.body.data).toMatchObject({ status: 'FAILED', error: { code: 'TIMEOUT' } });
+  });
+
+  it('two analyze calls for the same submission → one analysis row, both 202 with the same id', async () => {
+    const { submissionId } = await setupIncidentWithUpload(ctx);
+    tl.set(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+      return tlResponse(DETECTED);
+    });
+    const [r1, r2] = await Promise.all([
+      request(ctx.app).post(`/api/v1/submissions/${submissionId}/analyze`).set(bearer(TOKENS.witness)),
+      request(ctx.app).post(`/api/v1/submissions/${submissionId}/analyze`).set(bearer(TOKENS.witness)),
+    ]);
+    expect([r1.status, r2.status]).toEqual([202, 202]);
+    expect(r1.body.data.analysisId).toBe(r2.body.data.analysisId);
+    expect([r1.body.data.existing, r2.body.data.existing].sort()).toEqual([false, true]);
+    await ctx.analysis.queue.onIdle();
+    const rows = await ctx.db.query<{ n: string }>('select count(*)::text as n from analyses where submission_id = $1', [submissionId]);
+    expect(Number(rows.rows[0]?.n)).toBe(1);
   });
 
   it('sweep: orphaned ANALYZING analysis older than the timeout becomes FAILED(TIMEOUT) and submission ANALYSIS_FAILED', async () => {
