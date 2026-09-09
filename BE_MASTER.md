@@ -80,7 +80,7 @@ MVP 기본 동작은 확정된 입력 한 건에 대한 1회 검색이다. 새 �
 
 ## 4. 인증과 접근 권한
 
-실제 로그인은 Supabase Auth Google 로그인을 사용한다. FE가 Authorization: Bearer로 Supabase access token(JWT)을 전달하면 서버가 서명·만료·issuer(프로젝트 Auth URL)·audience를 검증하고 Supabase user UUID(`sub`)를 내부 user ID에 매핑한다. 실패하면 401을 반환하며 demo로 전환하지 않는다. 학교 소속 인증은 이번 범위에 없다.
+실제 로그인은 Supabase Auth Kakao 로그인을 사용한다. FE가 Authorization: Bearer로 Supabase access token(JWT)을 전달하면 서버가 서명·만료·issuer(프로젝트 Auth URL)·audience를 검증하고 Supabase user UUID(`sub`)를 내부 user ID에 매핑한다. 실패하면 401을 반환하며 demo로 전환하지 않는다. 학교 소속 인증은 이번 범위에 없다.
 
 토큰 검증은 `@supabase/supabase-js`의 `auth.getUser(jwt)` 또는 `auth.getClaims()`, 또는 프로젝트 JWKS(`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`)로 수행한다. JWT payload만 디코드하거나 FE가 보낸 user id를 그대로 신뢰하지 않는다. 서비스 롤 키와 JWT 비밀은 서버에서만 사용한다. users 행은 `auth_provider='supabase'`, `provider_uid`=Supabase Auth user UUID로 저장한다.
 
@@ -266,7 +266,7 @@ ADS_PLACEMENT_ID=
 ADS_SESSION_TTL_SECONDS=
 ```
 
-위 예시는 로컬 테스트용이다. 실제 MVP 검증에는 AUTH_MODE=supabase, AI_MODE=live, ADS_MODE=live와 해당 공급자의 구성을 사용한다. 광고 서명 검증 키·공급자 API 자격증명 등은 선정한 공급자의 방식에 따라 필요한 값만 추가한다. Supabase 서비스 롤 키와 JWT 검증 비밀은 env 또는 secret manager로 공급한다. FE에는 publishable(anon) 키와 프로젝트 URL만 두고, 서비스 롤 키를 VITE_ 변수에 넣지 않는다. Google 제공자는 Supabase Auth 대시보드에서 활성화한다.
+위 예시는 로컬 테스트용이다. 실제 MVP 검증에는 AUTH_MODE=supabase, AI_MODE=live, ADS_MODE=live와 해당 공급자의 구성을 사용한다. 광고 서명 검증 키·공급자 API 자격증명 등은 선정한 공급자의 방식에 따라 필요한 값만 추가한다. Supabase 서비스 롤 키와 JWT 검증 비밀은 env 또는 secret manager로 공급한다. FE에는 publishable(anon) 키와 프로젝트 URL만 두고, 서비스 롤 키를 VITE_ 변수에 넣지 않는다. Kakao 제공자는 Supabase Auth 대시보드와 Kakao Developers에서 활성화한다. 서버는 Kakao access token을 직접 검증하지 않고, FE가 받은 Supabase JWT만 검증한다.
 
 live 설정이 부족하면 startup validation 또는 해당 capability에서 명확히 실패하며 demo로 자동 전환하지 않는다. maps capability는 지도용 데이터 API 제공 여부를 의미하며 FE 지도 SDK가 준비되었다는 뜻은 아니다. 결제·웹훅 결제 비밀 키·지급 설정은 이번 MVP에 필요하지 않다.
 
