@@ -36,15 +36,16 @@ export async function listSubmissionsByIncident(q: Queryable, incidentId: string
 export async function insertSubmission(
   q: Queryable,
   s: { id: string; incidentId: string; witnessId: string; objectPath: string; mime: string; declaredBytes: number; durationSec: number | null; recordedAt: Date | null },
-): Promise<SubmissionRow> {
-  const row = await one<SubmissionRow>(
+): Promise<SubmissionRow | null> {
+  // Returns null when a submission for (incident, witness) already exists.
+  return one<SubmissionRow>(
     q,
     `insert into evidence_submissions (id, incident_id, witness_id, object_path, mime, declared_bytes, duration_sec, recorded_at, status)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, 'UPLOADING') returning *`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, 'UPLOADING')
+     on conflict (incident_id, witness_id) do nothing
+     returning *`,
     [s.id, s.incidentId, s.witnessId, s.objectPath, s.mime, s.declaredBytes, s.durationSec, s.recordedAt],
   );
-  if (!row) throw new Error('insertSubmission returned no row');
-  return row;
 }
 
 export async function resetForReupload(q: Queryable, id: string, declaredBytes: number, durationSec: number | null, recordedAt: Date | null): Promise<SubmissionRow | null> {

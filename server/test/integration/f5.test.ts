@@ -108,6 +108,16 @@ describe('F5 evidence submissions', () => {
     ctx.storage.put(VIDEO_BUCKET, objectPath, fakeMp4({ padBytes: 2 * 1024 * 1024 }), 'video/mp4');
     expect((await complete()).status).toBe(413);
 
+    // ftyp-only blob: MP4 signature but no readable moov → cannot be trusted even if client declared durationSec
+    ctx.storage.put(VIDEO_BUCKET, objectPath, fakeMp4().subarray(0, 32), 'video/mp4');
+    const opaque = await complete();
+    expect(opaque.status).toBe(422);
+    expect(opaque.body.error.message).toContain('duration and resolution');
+
+    // valid MP4 stored with a wrong Content-Type is rejected before download
+    ctx.storage.put(VIDEO_BUCKET, objectPath, fakeMp4(), 'application/octet-stream');
+    expect((await complete()).status).toBe(415);
+
     // still UPLOADING after all failures
     const view = await request(ctx.app).get(`/api/v1/submissions/${submissionId}`).set(bearer(TOKENS.witness));
     expect(view.body.data.status).toBe('UPLOADING');
@@ -178,8 +188,26 @@ describe('F5 evidence submissions', () => {
     expect(inc.body.data.submissions).toEqual({ total: 1, ready: 1 });
   });
 
-  it('ANALYSIS_FAILED submissions can request a fresh upload URL and re-complete', async () => {
+  it('ANALYSIS_FAILED re-upload refuses to proceed when the stale object cannot be removed', async () => {
     await ctx.db.query(`update evidence_submissions set status = 'ANALYSIS_FAILED' where id = $1`, [submissionId]);
+    const original = ctx.storage.remove.bind(ctx.storage);
+    ctx.storage.remove = async () => {
+      throw new Error('storage down');
+    };
+    try {
+      const res = await requestUploadUrl(incidentId, { mime: 'video/mp4', bytes: 700_000 });
+      expect(res.status).toBe(503);
+      expect(res.body.error.code).toBe('PROVIDER_UNAVAILABLE');
+    } finally {
+      ctx.storage.remove = original;
+    }
+    // row untouched, old object still there, still ANALYSIS_FAILED (not silently reopened)
+    const view = await request(ctx.app).get(`/api/v1/submissions/${submissionId}`).set(bearer(TOKENS.witness));
+    expect(view.body.data.status).toBe('ANALYSIS_FAILED');
+    expect(await ctx.storage.getObjectInfo(VIDEO_BUCKET, objectPath)).not.toBeNull();
+  });
+
+  it('ANALYSIS_FAILED submissions can request a fresh upload URL and re-complete', async () => {
     const res = await requestUploadUrl(incidentId, { mime: 'video/mp4', bytes: 700_000 });
     expect(res.status).toBe(200);
     expect(res.body.data.submissionId).toBe(submissionId);
@@ -191,6 +219,20 @@ describe('F5 evidence submissions', () => {
     const done = await request(ctx.app).post(`/api/v1/submissions/${submissionId}/complete-upload`).set(bearer(TOKENS.witness));
     expect(done.status).toBe(200);
     expect(done.body.data).toMatchObject({ status: 'UPLOADED', durationSec: 30 });
+  });
+
+  it('concurrent first requests for the same incident/witness yield one submission (no 500)', async () => {
+    const other = await createIncident();
+    const results = await Promise.all([
+      requestUploadUrl(other, { mime: 'video/mp4', bytes: 1000 }),
+      requestUploadUrl(other, { mime: 'video/mp4', bytes: 1000 }),
+      requestUploadUrl(other, { mime: 'video/mp4', bytes: 1000 }),
+    ]);
+    const statuses = results.map((r) => r.status).sort();
+    expect(statuses).toEqual([200, 200, 201]);
+    expect(new Set(results.map((r) => r.body.data.submissionId)).size).toBe(1);
+    const rows = await ctx.db.query<{ n: string }>('select count(*)::text as n from evidence_submissions where incident_id = $1', [other]);
+    expect(Number(rows.rows[0]?.n)).toBe(1);
   });
 
   it('refuses new submissions once the incident stopped collecting', async () => {

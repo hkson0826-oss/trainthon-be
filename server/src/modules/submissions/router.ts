@@ -44,6 +44,10 @@ const createSchema = z
   })
   .strict();
 
+function normalizeMime(ct: string): string {
+  return ct.split(';')[0]?.trim().toLowerCase() ?? ct;
+}
+
 export function submissionObjectPath(incidentId: string, submissionId: string): string {
   return `incidents/${incidentId}/submissions/${submissionId}/original.mp4`;
 }
@@ -137,27 +141,37 @@ export function submissionsRouter(deps: SubmissionsDeps): Router {
 
       const recordedAt = body.recordedAt ? new Date(body.recordedAt) : null;
       const durationSec = body.durationSec ?? null;
-      const existing = await findSubmissionByIncidentAndWitness(db, incidentId, user.id);
-      let submission: SubmissionRow;
-      let isNew = false;
-      if (existing) {
-        const reset = await resetForReupload(db, existing.id, body.bytes, durationSec, recordedAt);
-        if (!reset) throw new ApiError('ALREADY_EXISTS', `You already submitted evidence for this incident (status ${existing.status})`);
-        submission = reset;
-        await storage.remove(env.SUPABASE_BUCKET_VIDEOS, [existing.object_path]).catch(() => undefined);
-      } else {
-        const id = randomUUID();
-        submission = await insertSubmission(db, {
-          id,
-          incidentId,
-          witnessId: user.id,
-          objectPath: submissionObjectPath(incidentId, id),
-          mime: body.mime,
-          declaredBytes: body.bytes,
-          durationSec,
-          recordedAt,
-        });
-        isNew = true;
+      // Atomic create: concurrent first requests race on UNIQUE(incident_id, witness_id); the loser
+      // falls through to the re-issue path instead of surfacing a constraint error.
+      const id = randomUUID();
+      let submission: SubmissionRow | null = await insertSubmission(db, {
+        id,
+        incidentId,
+        witnessId: user.id,
+        objectPath: submissionObjectPath(incidentId, id),
+        mime: body.mime,
+        declaredBytes: body.bytes,
+        durationSec,
+        recordedAt,
+      });
+      let isNew = submission !== null;
+      if (!submission) {
+        const existing = await findSubmissionByIncidentAndWitness(db, incidentId, user.id);
+        if (!existing) throw ApiError.invalidState('Submission state changed concurrently; retry');
+        if (!['UPLOADING', 'ANALYSIS_FAILED'].includes(existing.status)) {
+          throw new ApiError('ALREADY_EXISTS', `You already submitted evidence for this incident (status ${existing.status})`);
+        }
+        // Remove the previous object *before* re-opening the row: if deletion fails, the stale
+        // evidence must not become completable again, so the failure propagates as 503.
+        try {
+          await storage.remove(env.SUPABASE_BUCKET_VIDEOS, [existing.object_path]);
+          if (await storage.getObjectInfo(env.SUPABASE_BUCKET_VIDEOS, existing.object_path)) throw new Error('object still present after remove');
+        } catch (err) {
+          throw new ApiError('PROVIDER_UNAVAILABLE', `Could not clear the previous upload: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        submission = await resetForReupload(db, existing.id, body.bytes, durationSec, recordedAt);
+        if (!submission) throw new ApiError('ALREADY_EXISTS', `You already submitted evidence for this incident (status ${existing.status})`);
+        isNew = false;
       }
 
       const signed = await storage.createSignedUploadUrl(env.SUPABASE_BUCKET_VIDEOS, submission.object_path, env.UPLOAD_SIGNED_URL_TTL_SEC);
@@ -198,6 +212,9 @@ export function submissionsRouter(deps: SubmissionsDeps): Router {
       const info = await storage.getObjectInfo(env.SUPABASE_BUCKET_VIDEOS, submission.object_path);
       if (!info || info.size <= 0) throw ApiError.invalidState('UPLOAD_NOT_FOUND: no object at the signed upload path yet');
       if (info.size > env.MAX_VIDEO_BYTES) throw new ApiError('FILE_TOO_LARGE', `Video exceeds ${env.MAX_VIDEO_BYTES} bytes`);
+      if (info.contentType && normalizeMime(info.contentType) !== 'video/mp4') {
+        throw new ApiError('UNSUPPORTED_MEDIA_TYPE', `Stored object content type is ${info.contentType}; upload with Content-Type: video/mp4`);
+      }
 
       const data = await storage.download(env.SUPABASE_BUCKET_VIDEOS, submission.object_path);
       if (data.length > env.MAX_VIDEO_BYTES) throw new ApiError('FILE_TOO_LARGE', `Video exceeds ${env.MAX_VIDEO_BYTES} bytes`);
@@ -208,7 +225,12 @@ export function submissionsRouter(deps: SubmissionsDeps): Router {
         const ff = await ffprobeInfo(data, env.FFPROBE_PATH);
         if (ff) probed = { durationSec: ff.durationSec ?? probed.durationSec, width: ff.width ?? probed.width, height: ff.height ?? probed.height };
       }
-      const effective: Mp4Info = { ...probed, durationSec: probed.durationSec ?? submission.duration_sec };
+      // Client-declared durationSec is only a hint for the upload URL step; completion requires
+      // metadata read from the file itself so an `ftyp`-only blob can never become UPLOADED.
+      if (probed.durationSec === null || probed.width === null || probed.height === null) {
+        throw new ApiError('VIDEO_UNANALYZABLE', 'Could not read duration and resolution from the MP4 (missing moov/mvhd/tkhd); re-encode and upload again');
+      }
+      const effective: Mp4Info = probed;
       validateProbed(env, effective);
 
       const sha256 = createHash('sha256').update(data).digest('hex');
