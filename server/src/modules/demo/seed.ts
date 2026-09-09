@@ -1,6 +1,7 @@
 import type { StorageAdapter } from '../../adapters/storage/index.js';
 import type { Env } from '../../config/env.js';
 import type { Db } from '../../lib/db.js';
+import { ApiError } from '../../lib/errors.js';
 import type { Logger } from '../../lib/logger.js';
 import { upsertPlace } from '../places/index.js';
 import { upsertVisit } from '../visits/index.js';
@@ -83,30 +84,21 @@ export async function resetDemoData(deps: ResetDeps, userIds: string[], opts: { 
     `select p.object_path from incident_photos p join incidents i on i.id = p.incident_id where i.requester_id = any($1::uuid[])`,
     [userIds],
   );
+  const submissionCount = await db.query<{ n: string }>(
+    `select count(*)::text as n from evidence_submissions s join incidents i on i.id = s.incident_id
+      where s.witness_id = any($1::uuid[]) or i.requester_id = any($1::uuid[])`,
+    [userIds],
+  );
   const videoPaths = await db.query<{ object_path: string }>(
     `select s.object_path from evidence_submissions s join incidents i on i.id = s.incident_id
       where s.witness_id = any($1::uuid[]) or i.requester_id = any($1::uuid[])`,
     [userIds],
   );
 
-  const counts = await db.transaction(async (tx) => {
-    // notifications first: the incident/submission cascades would otherwise remove them before they are counted
-    const notes = await tx.query<{ id: string }>(`delete from notifications where user_id = any($1::uuid[]) returning id`, [userIds]);
-    const subs = await tx.query<{ id: string }>(
-      `delete from evidence_submissions s using incidents i
-        where i.id = s.incident_id and (s.witness_id = any($1::uuid[]) or i.requester_id = any($1::uuid[])) returning s.id`,
-      [userIds],
-    );
-    const incs = await tx.query<{ id: string }>(`delete from incidents where requester_id = any($1::uuid[]) returning id`, [userIds]);
-    const visits = await tx.query<{ id: string }>(`delete from visits where user_id = any($1::uuid[]) returning id`, [userIds]);
-    await tx.query(`delete from audit_logs where actor_id = any($1::uuid[])`, [userIds]);
-    return { subs: subs.rows.length, incs: incs.rows.length, notes: notes.rows.length, visits: visits.rows.length };
-  });
-
-  if (opts.witnessId) await seedDemoVisit(db, opts.witnessId, opts.demoDate, env.DEMO_TIMEZONE);
-
+  // 1) Storage first, while the object paths are still referenced by rows. A failed removal aborts the
+  //    reset (rows keep their paths) so a retry can still find and delete the objects instead of orphaning them.
   let removed = 0;
-  let errors = 0;
+  const failures: string[] = [];
   const removeAll = async (bucket: string, paths: string[]) => {
     for (let i = 0; i < paths.length; i += 100) {
       const chunk = paths.slice(i, i + 100);
@@ -114,8 +106,9 @@ export async function resetDemoData(deps: ResetDeps, userIds: string[], opts: { 
         await storage.remove(bucket, chunk);
         removed += chunk.length;
       } catch (err) {
-        errors += 1;
-        logger.warn({ bucket, count: chunk.length, err: err instanceof Error ? err.message : String(err) }, 'demo reset: storage remove failed');
+        const message = err instanceof Error ? err.message : String(err);
+        failures.push(`${bucket}: ${message}`);
+        logger.warn({ bucket, count: chunk.length, err: message }, 'demo reset: storage remove failed');
       }
     }
   };
@@ -126,10 +119,36 @@ export async function resetDemoData(deps: ResetDeps, userIds: string[], opts: { 
       const staged = await storage.listObjects(env.SUPABASE_BUCKET_PHOTOS, `staging/${uid}/`);
       await removeAll(env.SUPABASE_BUCKET_PHOTOS, staged.map((o) => o.path));
     } catch (err) {
-      errors += 1;
-      logger.warn({ uid, err: err instanceof Error ? err.message : String(err) }, 'demo reset: staging list failed');
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push(`staging/${uid}: ${message}`);
+      logger.warn({ uid, err: message }, 'demo reset: staging list failed');
     }
   }
+  if (failures.length) {
+    throw new ApiError(
+      'PROVIDER_UNAVAILABLE',
+      `Demo reset aborted: storage cleanup failed (${failures.length}: ${failures.join('; ').slice(0, 300)}); database rows were kept so the reset can be retried`,
+    );
+  }
+
+  // 2) Database. Order matters: notifications before the cascades so they are counted; incidents before
+  //    submissions so `settlements.payout_submission_id` (no cascade) is removed together with its incident.
+  const counts = await db.transaction(async (tx) => {
+    const notes = await tx.query<{ id: string }>(`delete from notifications where user_id = any($1::uuid[]) returning id`, [userIds]);
+    const incs = await tx.query<{ id: string }>(`delete from incidents where requester_id = any($1::uuid[]) returning id`, [userIds]);
+    // Submissions the demo witness made on someone else's incident: detach any settlement that points at them first.
+    await tx.query(
+      `update settlements set payout_submission_id = null
+        where payout_submission_id in (select id from evidence_submissions where witness_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    const subs = await tx.query<{ id: string }>(`delete from evidence_submissions where witness_id = any($1::uuid[]) returning id`, [userIds]);
+    const visits = await tx.query<{ id: string }>(`delete from visits where user_id = any($1::uuid[]) returning id`, [userIds]);
+    await tx.query(`delete from audit_logs where actor_id = any($1::uuid[])`, [userIds]);
+    return { subs: Number(submissionCount.rows[0]?.n ?? 0) || subs.rows.length, incs: incs.rows.length, notes: notes.rows.length, visits: visits.rows.length };
+  });
+
+  if (opts.witnessId) await seedDemoVisit(db, opts.witnessId, opts.demoDate, env.DEMO_TIMEZONE);
 
   return {
     incidentsDeleted: counts.incs,
@@ -137,6 +156,6 @@ export async function resetDemoData(deps: ResetDeps, userIds: string[], opts: { 
     notificationsDeleted: counts.notes,
     visitsDeleted: counts.visits,
     storageObjectsRemoved: removed,
-    storageErrors: errors,
+    storageErrors: 0,
   };
 }

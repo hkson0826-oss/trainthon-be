@@ -601,11 +601,12 @@ paths:
                           notificationsDeleted: { type: integer }
                           visitsDeleted: { type: integer }
                           storageObjectsRemoved: { type: integer }
-                          storageErrors: { type: integer }
+                          storageErrors: { type: integer, description: 항상 0 — 스토리지 삭제 실패 시 503 으로 중단하고 DB 행을 유지한다 }
                           demoDate: { type: string }
                           seededVisit: { type: boolean }
                           accountsFound: { type: integer }
         '401': { description: 토큰 불일치 }
+        '503': { description: 'PROVIDER_UNAVAILABLE — Storage 객체 삭제 실패. DB 행은 유지되므로 재시도 가능' }
 
 components:
   securitySchemes:
