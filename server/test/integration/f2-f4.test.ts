@@ -104,7 +104,7 @@ describe('F3 incidents + F4 matching', () => {
     expect((await request(ctx.app).post(`/api/v1/notifications/${n.id}/read`).set(bearer(TOKENS.requester))).status).toBe(404);
   });
 
-  it('GET /incidents/:id returns owner DTO to X, masked DTO to notified Y, 404 to strangers', async () => {
+  it('GET /incidents/:id returns owner DTO to X and masked DTO to every authenticated viewer', async () => {
     const owner = await request(ctx.app).get(`/api/v1/incidents/${incidentId}`).set(bearer(TOKENS.requester));
     expect(owner.status).toBe(200);
     expect(owner.body.data.description).toContain('지하 2층');
@@ -124,7 +124,11 @@ describe('F3 incidents + F4 matching', () => {
     expect(operator.status).toBe(200);
     expect(operator.body.data.description).toContain('지하 2층');
 
-    expect((await request(ctx.app).get(`/api/v1/incidents/${incidentId}`).set(bearer(TOKENS.stranger))).status).toBe(404);
+    const stranger = await request(ctx.app).get(`/api/v1/incidents/${incidentId}`).set(bearer(TOKENS.stranger));
+    expect(stranger.status).toBe(200);
+    expect(stranger.body.data.masked).toBe(true);
+    expect(stranger.body.data).not.toHaveProperty('settlement');
+    expect(stranger.body.data).not.toHaveProperty('requesterId');
     expect((await request(ctx.app).get(`/api/v1/incidents/00000000-0000-4000-8000-0000000000ff`).set(bearer(TOKENS.requester))).status).toBe(404);
   });
 

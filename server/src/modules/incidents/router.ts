@@ -10,8 +10,7 @@ import type { Logger } from '../../lib/logger.js';
 import { created, ok } from '../../lib/response.js';
 import { currentUser, requireRole, type AuthedUser } from '../../middleware/auth.js';
 import { runMatching } from '../matching/index.js';
-import { wasNotifiedForIncident } from '../notifications/index.js';
-import { findPlace } from '../places/index.js';
+import { findPlace, upsertPlace } from '../places/index.js';
 import { createDeposit, findSettlementByIncident, toSettlementDto } from '../settlement/repo.js';
 import { attachStagedPhotos, createPhotoUploadUrl, removeIncidentPhotos } from './photos.service.js';
 import {
@@ -19,6 +18,7 @@ import {
   insertIncident,
   insertIncidentPhoto,
   listIncidentsByRequester,
+  listMapIncidents,
   listPhotos,
   type IncidentPhotoRow,
   type IncidentWithPlace,
@@ -43,7 +43,13 @@ const MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const createSchema = z
   .object({
-    placeId: z.string().uuid(),
+    placeId: z.string().uuid().optional(),
+    location: z.object({
+      name: z.string().trim().min(1).max(200),
+      address: z.string().trim().min(1).max(500),
+      lat: z.number().min(-90).max(90),
+      lng: z.number().min(-180).max(180),
+    }).strict().optional(),
     type: z.enum(['HIT_AND_RUN', 'CONTACT', 'DAMAGE', 'OTHER']),
     occurredFrom: z.string().datetime({ offset: true }),
     occurredTo: z.string().datetime({ offset: true }),
@@ -56,7 +62,17 @@ const createSchema = z
     photoObjectPaths: z.array(z.string().min(1).max(300)).max(10).default([]),
     consent: z.object({ evidenceUse: z.literal(true), privacy: z.literal(true) }),
   })
-  .strict();
+  .strict().refine((body) => body.placeId || body.location, { path: ['location'], message: 'Select an incident location' });
+
+const mapQuerySchema = z.object({
+  south: z.coerce.number().min(-90).max(90).optional(),
+  north: z.coerce.number().min(-90).max(90).optional(),
+  west: z.coerce.number().min(-180).max(180).optional(),
+  east: z.coerce.number().min(-180).max(180).optional(),
+}).strict().refine((b) => {
+  const values = [b.south, b.north, b.west, b.east];
+  return values.every((v) => v === undefined) || (values.every((v) => v !== undefined) && b.south! <= b.north! && b.west! <= b.east!);
+}, { message: 'Provide all four ordered map bounds' });
 
 const uploadUrlSchema = z.object({ mime: z.string().min(1).max(100), bytes: z.number().int().positive() }).strict();
 
@@ -143,12 +159,12 @@ async function signPhotos(deps: IncidentsDeps, q: Queryable, viewerId: string, i
   return signed;
 }
 
-export type IncidentAccess = 'OWNER' | 'WITNESS' | 'NONE';
+export type IncidentAccess = 'OWNER' | 'VIEWER' | 'NONE';
 
-/** Owner and OPERATOR see the owner DTO; a notified witness sees the masked DTO; others 404. */
+/** Every authenticated user can read published reports; owner-only resources stay private. */
 export async function resolveIncidentAccess(q: Queryable, incident: IncidentWithPlace, viewer: AuthedUser): Promise<IncidentAccess> {
   if (incident.requester_id === viewer.id || viewer.role === 'OPERATOR') return 'OWNER';
-  if (viewer.role === 'WITNESS' && (await wasNotifiedForIncident(q, viewer.id, incident.id))) return 'WITNESS';
+  if (incident.published_at && incident.status !== 'DRAFT') return 'VIEWER';
   return 'NONE';
 }
 
@@ -190,14 +206,17 @@ export function incidentsRouter(deps: IncidentsDeps): Router {
       if (body.photoObjectPaths.length > env.MAX_PHOTO_COUNT) fieldErrors.photoObjectPaths = `at most ${env.MAX_PHOTO_COUNT}`;
       if (Object.keys(fieldErrors).length) throw ApiError.validation('Invalid incident', fieldErrors);
 
-      const place = await findPlace(db, body.placeId);
-      if (!place) throw ApiError.validation('Unknown place', { placeId: 'not_found' });
+      const existingPlace = body.placeId ? await findPlace(db, body.placeId) : null;
+      if (body.placeId && !existingPlace) throw ApiError.validation('Unknown place', { placeId: 'not_found' });
+      const location = body.location ?? existingPlace!;
+      const place = existingPlace ?? { id: randomUUID(), kind: 'BUILDING' as const, ...body.location! };
 
       const incidentId = randomUUID();
       const photos = await attachStagedPhotos(deps, user.id, incidentId, body.photoObjectPaths);
       writtenPhotoPaths = photos.map((p) => p.objectPath);
 
       const result = await db.transaction(async (tx) => {
+        if (!existingPlace) await upsertPlace(tx, place);
         const incident = await insertIncident(tx, {
           id: incidentId,
           requesterId: user.id,
@@ -209,6 +228,7 @@ export function incidentsRouter(deps: IncidentsDeps): Router {
           vehicleModel: body.vehicle.model,
           damageArea: body.vehicle.damageArea,
           description: body.description,
+          location,
         });
         for (const p of photos) await insertIncidentPhoto(tx, { incidentId, ...p });
         await createDeposit(tx, env, incidentId);
@@ -259,6 +279,18 @@ export function incidentsRouter(deps: IncidentsDeps): Router {
     } catch (err) {
       next(err);
     }
+  });
+
+  r.get('/incidents/map', async (req, res, next) => {
+    try {
+      const b = mapQuerySchema.parse(req.query);
+      const rows = await listMapIncidents(db, b.south === undefined ? undefined : { south: b.south, north: b.north!, west: b.west!, east: b.east! });
+      ok(res, {
+        items: rows.slice(0, 200).map((i) => ({ id: i.id, type: i.type, status: i.status, place: placeDto(i),
+          occurredFrom: i.occurred_from.toISOString(), occurredTo: i.occurred_to.toISOString() })),
+        hasMore: rows.length > 200,
+      });
+    } catch (err) { next(err); }
   });
 
   r.get('/incidents/:id', async (req, res, next) => {

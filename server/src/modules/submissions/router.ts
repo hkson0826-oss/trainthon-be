@@ -12,7 +12,6 @@ import { created, ok } from '../../lib/response.js';
 import { currentUser, requireRole, type AuthedUser } from '../../middleware/auth.js';
 import { findIncident, updateIncidentStatus, type IncidentWithPlace } from '../incidents/repo.js';
 import type { SubmissionSummary } from '../incidents/router.js';
-import { wasNotifiedForIncident } from '../notifications/index.js';
 import {
   countSubmissions,
   findSubmission,
@@ -136,7 +135,7 @@ export function submissionsRouter(deps: SubmissionsDeps): Router {
       validateDeclared(env, body);
 
       const incident = await findIncident(db, incidentId);
-      if (!incident || !(await wasNotifiedForIncident(db, user.id, incidentId))) throw ApiError.notFound('Incident not found');
+      if (!incident || !incident.published_at || incident.status === 'DRAFT') throw ApiError.notFound('Incident not found');
       if (!['OPEN', 'COLLECTING'].includes(incident.status)) throw ApiError.invalidState(`Incident is ${incident.status}; no longer collecting evidence`);
 
       const recordedAt = body.recordedAt ? new Date(body.recordedAt) : null;

@@ -69,13 +69,13 @@ describe('F5 evidence submissions', () => {
     expect((await requestUploadUrl(other, { mime: 'video/mp4' })).status).toBe(400);
   });
 
-  it('only notified witnesses may submit; requester and non-notified witnesses get 403/404', async () => {
+  it('witnesses may submit without a notification; requester role is still rejected', async () => {
     expect((await requestUploadUrl(incidentId, { mime: 'video/mp4', bytes: 1000 }, TOKENS.requester)).status).toBe(403);
-    // a WITNESS who never received a WITNESS_REQUEST for this incident must not learn it exists
+    // Public authenticated discovery no longer requires a notification.
     await request(ctx.app).get('/api/v1/me').set(bearer(TOKENS.stranger)); // first login creates the profile
     await ctx.db.query(`update profiles set role = 'WITNESS' where id = $1`, [TEST_IDS.stranger]);
     const res = await requestUploadUrl(incidentId, { mime: 'video/mp4', bytes: 1000 }, TOKENS.stranger);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(201);
     expect((await requestUploadUrl('00000000-0000-4000-8000-0000000000ff', { mime: 'video/mp4', bytes: 1000 })).status).toBe(404);
   });
 
@@ -185,7 +185,7 @@ describe('F5 evidence submissions', () => {
     await ctx.db.query(`update evidence_submissions set status = 'READY' where id = $1`, [submissionId]);
     expect((await request(ctx.app).get(`/api/v1/submissions/${submissionId}/video-url`).set(bearer(TOKENS.requester))).status).toBe(200);
     const inc = await request(ctx.app).get(`/api/v1/incidents/${incidentId}`).set(bearer(TOKENS.requester));
-    expect(inc.body.data.submissions).toEqual({ total: 1, ready: 1 });
+    expect(inc.body.data.submissions).toEqual({ total: 2, ready: 1 });
   });
 
   it('ANALYSIS_FAILED re-upload refuses to proceed when the stale object cannot be removed', async () => {

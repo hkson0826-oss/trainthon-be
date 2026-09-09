@@ -43,7 +43,9 @@ export interface IncidentPhotoRow {
 }
 
 const SELECT_WITH_PLACE = `
-  select i.*, p.name as place_name, p.kind as place_kind, p.address as place_address, p.lat as place_lat, p.lng as place_lng
+  select i.*, coalesce(i.location_name, p.name) as place_name, p.kind as place_kind,
+    coalesce(i.location_address, p.address) as place_address,
+    coalesce(i.location_lat, p.lat) as place_lat, coalesce(i.location_lng, p.lng) as place_lng
     from incidents i join places p on p.id = i.place_id`;
 
 export async function insertIncident(
@@ -59,13 +61,16 @@ export async function insertIncident(
     vehicleModel: string;
     damageArea: string;
     description: string;
+    location?: { name: string; address: string; lat: number | null; lng: number | null };
   },
 ): Promise<IncidentRow> {
   const row = await one<IncidentRow>(
     q,
-    `insert into incidents (id, requester_id, place_id, type, occurred_from, occurred_to, vehicle_color, vehicle_model, damage_area, description, status, published_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'OPEN', now()) returning *`,
-    [i.id, i.requesterId, i.placeId, i.type, i.occurredFrom, i.occurredTo, i.vehicleColor, i.vehicleModel, i.damageArea, i.description],
+    `insert into incidents (id, requester_id, place_id, type, occurred_from, occurred_to, vehicle_color, vehicle_model, damage_area, description, status, published_at,
+      location_name, location_address, location_lat, location_lng)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'OPEN', now(), $11, $12, $13, $14) returning *`,
+    [i.id, i.requesterId, i.placeId, i.type, i.occurredFrom, i.occurredTo, i.vehicleColor, i.vehicleModel, i.damageArea, i.description,
+      i.location?.name ?? null, i.location?.address ?? null, i.location?.lat ?? null, i.location?.lng ?? null],
   );
   if (!row) throw new Error('insertIncident returned no row');
   return row;
@@ -87,6 +92,14 @@ export async function findIncident(q: Queryable, id: string): Promise<IncidentWi
 
 export async function listIncidentsByRequester(q: Queryable, requesterId: string): Promise<IncidentWithPlace[]> {
   return many<IncidentWithPlace>(q, `${SELECT_WITH_PLACE} where i.requester_id = $1 order by i.created_at desc limit 100`, [requesterId]);
+}
+
+export async function listMapIncidents(q: Queryable, bounds?: { south: number; west: number; north: number; east: number }): Promise<IncidentWithPlace[]> {
+  return many<IncidentWithPlace>(q, `${SELECT_WITH_PLACE}
+    where i.published_at is not null and i.status <> 'DRAFT'
+      and coalesce(i.location_lat, p.lat) is not null and coalesce(i.location_lng, p.lng) is not null
+      ${bounds ? 'and coalesce(i.location_lat, p.lat) between $1 and $2 and coalesce(i.location_lng, p.lng) between $3 and $4' : ''}
+    order by i.created_at desc, i.id desc limit 201`, bounds ? [bounds.south, bounds.north, bounds.west, bounds.east] : []);
 }
 
 export async function listPhotos(q: Queryable, incidentId: string): Promise<IncidentPhotoRow[]> {
