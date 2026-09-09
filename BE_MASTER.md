@@ -316,8 +316,6 @@ MVP 완료 조건:
 
 목록·지도·검색 후보에 동일한 공개 발견 위치를 제공하라. 지도 렌더링은 FE가 담당한다. 비공개 보관 장소·연락처·타인의 마지막 위치를 공개하지 마라.
 
-기존 PRODUCT_CONTRACT.md 등의 결제·환불·반환·정산·7일 검색 요구가 충돌하면 최신 BE_MASTER.md를 따르고 공통 계약과 OpenAPI를 새 MVP에 맞춰 정리하라. 제외된 기능을 구현 범위에 되살리지 마라. 기존 데이터와 사용자 변경을 보존하라.
-
 Express/TypeScript/SQLite/Supabase Auth 기반으로 기존 server/를 확장하라. 실제 AI와 광고 adapter, 테스트용 demo adapter를 구분하라. 실제 공급자와 설정이 없으면 로컬 검증은 진행하되 실제 연결 미완료를 명확히 보고하라.
 
 의미 있는 API·권한·경합 테스트, typecheck/build와 FE 통합 검증을 수행하라. 실행 README·환경 예시·fixture·API 문서를 제공하고 구현 범위, 검증 결과, 실행법, 외부 연동에 남은 항목을 보고하라.
