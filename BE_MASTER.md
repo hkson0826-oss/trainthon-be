@@ -174,7 +174,7 @@ worker는 lease로 작업을 확보하고 DB transaction 밖에서 AI를 호출�
 
 1. AVAILABLE 공개 습득물을 DB에서 조회한다. 후보가 많으면 최근 N건, 카테고리가 있으면 같은 카테고리 우선처럼 단순한 상한만 둔다.
 2. 분실 요청에 사진이 있으면 이미지와 설명을, 없으면 설명만 모델에 넣는다. 설명이 없고 사진만 있는 요청도 정상 처리한다. 사진과 설명이 모두 없는 요청은 앞 단계에서 거절한다.
-3. 각 후보의 공개 이미지와 공개 텍스트를 함께 넣어 일치 여부, 간단한 점수, 짧은 근거를 구조화 JSON으로 받는다. 한 번의 배치 호출이든 후보별 호출이든 구현이 단순한 쪽을 택한다.
+3. 각 후보의 공개 이미지와 공개 텍스트를 함께 넣어 일치 여부, 간단한 점수, 짧은 근거를 JSON으로 받는다. 기본 모델은 Groq `qwen/qwen3.6-27b`다. 요청당 이미지는 최대 5장이므로 후보가 많으면 나눠 호출한다. thinking/reasoning 모드는 끄고 JSON mode만 쓴다. 한 번의 배치 호출이든 후보별 호출이든 구현이 단순한 쪽을 택한다.
 4. 서버는 응답을 검증한 뒤 점수 내림차순으로 matches에 저장한다. 위치·시간은 있으면 보조 힌트로 모델에 알려 주고, 없으면 생략한다. 거리 함수·시간 감쇠·embedding cosine·벡터 DB·가중치 앙상블은 사용하지 않는다.
 5. 후보 ID만 주고 고르게 하거나 고정 fixture 순위를 AI 결과로 반환하지 않는다.
 6. 반환 점수는 순위 지표이며 소유권이나 정답 확률의 증명이 아니다. 일치 근거는 실제 공개 입력에 근거한다.
@@ -183,7 +183,7 @@ worker는 lease로 작업을 확보하고 DB transaction 밖에서 AI를 호출�
 
 원본 수정 시 sourceHash로 추출 정보를 무효화하고 이전 작업이 새 내용을 덮어쓰지 못하게 한다. 후보 조회 시 현재 공개 상태를 다시 확인하여 보관 처리된 물건이나 삭제된 공개 정보를 노출하지 않는다.
 
-해커톤 기본값은 AI_MODE=live다. 키가 있으면 실제 멀티모달 호출로 추출과 매칭을 수행한다. AI_MODE=demo는 키 없이 로컬 테스트할 때만 쓰는 결정적 fixture다. live 실패 시 demo로 자동 전환하지 않는다. 키가 없으면 로컬 검증은 수행하되 실제 AI 연동 미완료를 명시한다.
+해커톤 기본값은 AI_MODE=live다. 기본 공급자는 Groq이고, 모델은 사진 입력이 되는 `qwen/qwen3.6-27b`다. Gemini·GPT-4o 계열은 쓰지 않는다. Groq 무료 티어로 데모 호출량을 감당하는 것을 전제로 한다. 키가 있으면 실제 멀티모달 호출로 추출과 매칭을 수행한다. AI_MODE=demo는 키 없이 로컬 테스트할 때만 쓰는 결정적 fixture다. live 실패 시 demo로 자동 전환하지 않는다. 키가 없으면 로컬 검증은 수행하되 실제 AI 연동 미완료를 명시한다.
 
 ## 9. 지도 데이터와 개인정보
 
@@ -259,12 +259,12 @@ CORS_ORIGINS=http://localhost:3000
 PUBLIC_APP_URL=http://localhost:3000
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
-GEMINI_MODEL=
-GEMINI_API_KEY=
+GROQ_API_KEY=
+AI_MODEL=qwen/qwen3.6-27b
 ADS_SESSION_TTL_SECONDS=
 ```
 
-위 예시는 해커톤 데모 기본값이다. AUTH_MODE=supabase, AI_MODE=live, ADS_MODE=demo를 사용한다. 광고 매체 키·웹훅 서명 비밀은 넣지 않는다. AUTH_MODE=demo와 AI_MODE=demo는 키 없이 로컬 테스트할 때만 쓴다. Supabase 서비스 롤 키와 JWT 검증 비밀은 env 또는 secret manager로 공급한다. FE에는 publishable(anon) 키와 프로젝트 URL만 두고, 서비스 롤 키를 VITE_ 변수에 넣지 않는다. Kakao 제공자는 Supabase Auth 대시보드와 Kakao Developers에서 활성화한다. 서버는 Kakao access token을 직접 검증하지 않고, FE가 받은 Supabase JWT만 검증한다.
+위 예시는 해커톤 데모 기본값이다. AUTH_MODE=supabase, AI_MODE=live, ADS_MODE=demo를 사용한다. AI는 Groq `qwen/qwen3.6-27b`다. 서버에서 OpenAI 호환 Chat Completions로 호출하고, 사진·설명 추출과 매칭에 같은 모델을 쓴다. 광고 매체 키·웹훅 서명 비밀은 넣지 않는다. AUTH_MODE=demo와 AI_MODE=demo는 키 없이 로컬 테스트할 때만 쓴다. Supabase 서비스 롤 키와 JWT 검증 비밀, Groq API 키는 env 또는 secret manager로 공급한다. FE에는 publishable(anon) 키와 프로젝트 URL만 두고, 서비스 롤 키와 Groq 키를 VITE_ 변수에 넣지 않는다. Kakao 제공자는 Supabase Auth 대시보드와 Kakao Developers에서 활성화한다. 서버는 Kakao access token을 직접 검증하지 않고, FE가 받은 Supabase JWT만 검증한다.
 
 AUTH 또는 AI live 설정이 부족하면 startup validation 또는 해당 capability에서 명확히 실패하며 demo로 자동 전환하지 않는다. 광고는 demo가 정상 경로이므로 매체 키 부재를 오류로 취급하지 않는다. maps capability는 지도용 데이터 API 제공 여부를 의미하며 FE 지도 SDK가 준비되었다는 뜻은 아니다. 결제·웹훅 결제 비밀 키·지급 설정은 이번 MVP에 필요하지 않다.
 
@@ -329,7 +329,7 @@ Lumina 해커톤 백엔드 데모를 구현하고 검증하라. 사용자 확정
 
 기존 PRODUCT_CONTRACT.md 등의 결제·환불·반환·정산·7일 검색 요구가 충돌하면 최신 BE_MASTER.md를 따르고 공통 계약과 OpenAPI를 새 MVP에 맞춰 정리하라. 제외된 기능을 구현 범위에 되살리지 마라. 기존 데이터와 사용자 변경을 보존하라.
 
-Express/TypeScript/SQLite/Supabase Kakao Auth 기반으로 기존 server/를 확장하라. 기본 설정은 AUTH_MODE=supabase, AI_MODE=live, ADS_MODE=demo다. 실제 AI 키가 없으면 로컬 검증은 진행하되 실제 연결 미완료를 명확히 보고하라.
+Express/TypeScript/SQLite/Supabase Kakao Auth 기반으로 기존 server/를 확장하라. 기본 설정은 AUTH_MODE=supabase, AI_MODE=live, ADS_MODE=demo다. AI는 Groq `qwen/qwen3.6-27b`로 사진·텍스트를 보고 추출·매칭하라. Gemini는 쓰지 마라. 실제 AI 키가 없으면 로컬 검증은 진행하되 실제 연결 미완료를 명확히 보고하라.
 
 의미 있는 API·권한 테스트, typecheck/build와 FE 통합 검증을 수행하라. 실행 README·환경 예시·fixture·API 문서를 제공하고 구현 범위, 검증 결과, 실행법, 남은 항목을 보고하라.
 ```
