@@ -136,7 +136,7 @@ server/
 | `visits` | `user_id`, `place_id`, `entered_at`, `exited_at`, `source` (`SEED`/`MANUAL`), `retain_until` | 데모 seed: Y, A주차장 13:58~14:12 |
 | `incidents` | `requester_id`, `place_id`, `type` (`HIT_AND_RUN`/`CONTACT`/`DAMAGE`/`OTHER`), `occurred_from`, `occurred_to`, `vehicle_color`, `vehicle_model`, `damage_area`, `description`, `status`, `matched_witness_count int`, `published_at` | `occurred_from < occurred_to` CHECK |
 | `incident_photos` | `incident_id`, `object_path`, `mime`, `bytes`, `width`, `height`, `sha256`, `position` | UNIQUE(`incident_id`,`position`), 최대 2장 |
-| `notifications` | `user_id`, `type` (`WITNESS_REQUEST`/`CANDIDATE_FOUND`/`ADOPTION_UPDATED`/`REWARD_SCHEDULED`), `incident_id`, `submission_id?`, `title`, `body`, `read_at` | UNIQUE(`user_id`,`type`,`incident_id`,`submission_id`) 중복 알림 방지 |
+| `notifications` | `user_id`, `type` (`WITNESS_REQUEST`/`CANDIDATE_FOUND`/`NO_CANDIDATE`/`ADOPTION_UPDATED`/`REWARD_SCHEDULED`), `incident_id`, `submission_id?`, `title`, `body`, `read_at` | 중복 알림 방지: `UNIQUE (user_id, type, incident_id, submission_id) NULLS NOT DISTINCT`(PostgreSQL 15+, Supabase 지원). `NULLS NOT DISTINCT`를 못 쓰면 `submission_id IS NULL`용·`IS NOT NULL`용 partial unique index 2개로 대체. 기본 UNIQUE는 NULL을 서로 다른 값으로 보므로 `WITNESS_REQUEST`(submission_id NULL)가 중복 삽입된다 |
 | `evidence_submissions` | `incident_id`, `witness_id`, `object_path`, `mime`, `bytes`, `duration_sec`, `width`, `height`, `sha256`, `recorded_at?`, `status`, `upload_completed_at` | UNIQUE(`incident_id`,`witness_id`) — 데모에서는 1인 1제보 |
 | `analyses` | `submission_id`, `status`, `source` (`LIVE`/`PRERECORDED`), `provider`='twelvelabs', `model`, `prompt_version`, `request_payload_hash`, `raw_response jsonb`, `result jsonb`, `error_code`, `error_message`, `attempts`, `started_at`, `finished_at` | UNIQUE(`submission_id`) |
 | `insurer_reviews` | `submission_id`, `incident_id`, `status` (`REVIEWING`/`ADOPTED`/`REJECTED`), `submitted_at`, `decided_at`, `decided_by`, `note` | UNIQUE(`submission_id`) |
@@ -217,7 +217,8 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 
 **처리 규칙**
 
-- 시작 시 `config/env.ts`가 필수 env(`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TWELVELABS_API_KEY`)를 검증한다. 누락 시 프로세스를 종료하고 어떤 키가 없는지 출력한다. `AI_MODE=live`가 기본이며 키 부재를 Mock으로 조용히 대체하지 않는다.
+- 시작 시 `config/env.ts`가 필수 env를 검증한다. 항상 필수: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. **`AI_MODE=live`일 때만** `TWELVELABS_API_KEY` 필수. 누락 시 프로세스를 종료하고 어떤 키가 없는지 출력한다. 키가 없다고 `AI_MODE`를 `fake`로 자동 전환하지 않는다(명시적으로 설정해야 함).
+- `AI_MODE=fake`는 키 없는 로컬 개발·자동 테스트 전용이다. fake 어댑터는 업로드 영상의 sha256이 `fixtures/prerecorded/*.json`과 일치하면 그 결과를, 아니면 고정 `incidentDetected=false` 결과를 반환하며 항상 `source="PRERECORDED"`로 저장한다. `GET /config`의 `aiMode`에 `fake`가 그대로 노출되고, `DEMO_MODE=true`와 `AI_MODE=fake`가 동시에 켜지면 시작 로그에 경고를 남긴다(발표는 `live`로만).
 - CORS는 `CORS_ORIGINS`에 나열된 origin만 허용한다.
 - body 크기 상한(JSON 1MB), 요청 타임아웃, 사용자별 rate limit(분당 60)을 둔다.
 
@@ -265,9 +266,8 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 
 | Method/Path | 접근 | 설명 |
 |---|---|---|
-| `POST /api/v1/uploads/photo-url` | REQUESTER | `{ incidentId?, position, mime, bytes }` → `{ objectPath, uploadUrl, token, expiresAt }` (Supabase `createSignedUploadUrl`) |
-| `POST /api/v1/incidents` | REQUESTER | 본문 아래. `201` + `IncidentDetail` + `matching` 요약 |
-| `POST /api/v1/incidents/:id/photos` | 작성자 | `{ objectPath, position }` — 업로드 완료를 서버에 알려 메타(크기·MIME·해시) 검증 후 연결. 최대 2장 |
+| `POST /api/v1/uploads/photo-url` | REQUESTER | `{ mime, bytes }` → `{ objectPath, uploadUrl, token, expiresAt }` (Supabase `createSignedUploadUrl`). 경로는 `staging/{userId}/{uuid}.{ext}` — 사고 요청이 아직 없으므로 사용자 스테이징 영역에 올린다 |
+| `POST /api/v1/incidents` | REQUESTER | 본문 아래. `photoObjectPaths`의 스테이징 객체를 검증·연결(→ `incidents/{incidentId}/{position}.{ext}`로 move)까지 한 번에 처리한다. `201` + `IncidentDetail` + `matching` 요약. 별도의 사진 연결 API는 없다 |
 | `GET /api/v1/incidents/:id` | 작성자, 알림 대상 Y, OPERATOR | Y에게는 개인정보 마스킹 DTO |
 | `GET /api/v1/me/incidents` | REQUESTER | 본인 요청 목록과 제보 현황 |
 
@@ -281,7 +281,7 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
   "occurredTo": "2026-09-09T14:10:00+09:00",
   "vehicle": { "color": "흰색", "model": "세단(아반떼)", "damageArea": "우측 후면" },
   "description": "주차 후 돌아왔더니 우측 뒤 범퍼가 긁혀 있었습니다.",
-  "photoObjectPaths": ["incidents/{tmp}/0.jpg"],
+  "photoObjectPaths": ["staging/{userId}/{uuid}.jpg"],
   "consent": { "evidenceUse": true, "privacy": true }
 }
 ```
@@ -289,7 +289,7 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 **처리 규칙**
 
 1. zod로 검증: `occurredFrom < occurredTo`, 범위 ≤ 24h, `description` ≤ 1,000자, `consent` 둘 다 true 필수.
-2. 사진은 서버가 Storage 객체 메타를 조회해 MIME 시그니처·크기(≤10MB)·픽셀 상한을 확인하고 EXIF를 제거한 뒤 `incident_photos`에 연결한다. 사진 없이도 요청 생성은 가능하되 데모 시나리오는 1~2장을 올린다.
+2. 사진은 `photoObjectPaths`가 모두 본인 `staging/{userId}/` 아래인지 확인한 뒤, Storage 객체 메타를 조회해 MIME 시그니처·크기(≤10MB)·픽셀 상한을 확인하고 EXIF를 제거해 `incidents/{incidentId}/{position}.{ext}`로 옮기고 `incident_photos`에 연결한다. 타인 스테이징 경로나 존재하지 않는 객체는 400. 연결되지 않은 스테이징 객체는 24시간 후 정리 작업으로 삭제한다. 사진 없이도 요청 생성은 가능하되 데모 시나리오는 1~2장을 올린다.
 3. 트랜잭션 안에서 `incidents(status=OPEN)` 저장 → `settlements(DEPOSITED, deposit_amount=DEMO_DEPOSIT_AMOUNT)` 생성 → **F4 매칭 실행** → 응답.
 4. 응답의 `matching: { matchedWitnessCount: 1, notifiedAt }`를 FE 완료 화면이 사용한다(`같은 시간대 방문 사용자 1명 발견`).
 5. Y용 DTO에서는 X의 이름·연락처·정확한 차량번호를 제거하고 `place, occurredFrom/To, type, vehicle(color/model/damageArea), description(요약)`, 사진 signed URL(짧은 TTL), `rewardPreview: { amount, mock: true }`(정산의 `witness_reward`), `mySubmissionId?`(이미 제보했으면)만 제공한다.
@@ -382,8 +382,9 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 4. X의 피해 차량 사진이 있으면 `prompt_v2.media_sources`(최대 4)로 참고 이미지를 넣고 `<@victim-photo-1>` 플레이스홀더로 참조한다. 사진이 없으면 `prompt`만 사용한다.
 5. `response_format: { type: "json_schema", json_schema: <아래 스키마> }`, `stream: false`, `temperature: 0.2`, `max_tokens: 1024`로 호출한다. 타임아웃 `ANALYSIS_TIMEOUT_MS`(기본 120000).
 6. 응답 `data`를 JSON 파싱 → zod로 재검증 → `FINALIZING`에서 서버 필드(`incidentTimestampLabel = "00:12"`, `videoDurationSec`, `promptVersion`)를 붙여 `result`에 저장 → `READY`.
-7. submission → `READY`, X에게 `notifications(type=CANDIDATE_FOUND)` 생성(F7).
+7. submission → `READY`. `result.incidentDetected=true`이면 X에게 `notifications(type=CANDIDATE_FOUND)`를, `false`이면 `notifications(type=NO_CANDIDATE)`를 생성한다(F7). 후보 없음 결과는 정상 완료이며 실패가 아니다.
 8. 실패 시 `analyses.status=FAILED`, `error_code`(`PROVIDER_UNAVAILABLE`/`PROVIDER_REJECTED`/`INVALID_RESPONSE`/`TIMEOUT`), submission → `ANALYSIS_FAILED`.
+9. 고아 작업 정리: 서버 시작 시, 그리고 매 60초마다 `QUEUED`/`ANALYZING`/`FINALIZING` 상태로 `started_at`(또는 `created_at`)이 `ANALYSIS_TIMEOUT_MS + 30초`를 넘긴 `analyses`를 `FAILED(error_code=TIMEOUT)`로 정리하고 submission을 `ANALYSIS_FAILED`로 되돌린다. 프로세스 내 큐는 재시작 시 사라지므로 이 sweep이 없으면 영원히 `AI 분석 중`으로 남는다.
 
 **프롬프트 (`prompt_version = "v1"`, 서버 상수)**
 
@@ -473,11 +474,13 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 
 | Method/Path | 접근 | 설명 |
 |---|---|---|
-| `GET /api/v1/incidents/:id/candidates` | 작성자, OPERATOR | `READY` 이상인 제보 목록. 각 항목: `{ submissionId, status, analysis: { source, result }, videoUrl(signed), witness: { maskedId: "제보자 #1" }, insurerReview?, humanReviewed: false }` |
+| `GET /api/v1/incidents/:id/candidates` | 작성자, OPERATOR | `READY` 이상이고 **`analysis.result.incidentDetected=true`**인 제보 목록. 각 항목: `{ submissionId, status, analysis: { source, result }, videoUrl(signed), witness: { maskedId: "제보자 #1" }, insurerReview?, humanReviewed: false }`. 응답 `meta.noCandidateCount`에 후보 없음으로 끝난 제보 수를 함께 준다 |
 
 **처리 규칙**
 
-- 분석 `READY` 시 X에게 `CANDIDATE_FOUND` 알림 생성: `"A주차장 사고에 대한 후보 영상이 발견되었습니다. 00:12 지점을 확인해 보세요."`
+- 후보 전달은 `incidentDetected=true`에만 해당한다. `READY`이지만 `incidentDetected=false`인 제보는 `candidates`에 넣지 않고, `submit-to-insurer`도 거절(409 `INVALID_STATE`, 메시지 `NO_CANDIDATE`)한다.
+- 분석 `READY` + `incidentDetected=true` 시 X에게 `CANDIDATE_FOUND` 알림 생성: `"A주차장 사고에 대한 후보 영상이 발견되었습니다. 00:12 지점을 확인해 보세요."`
+- 분석 `READY` + `incidentDetected=false` 시 X에게 `NO_CANDIDATE` 알림 생성: `"A주차장 사고에 제보된 영상에서 관련 장면을 찾지 못했습니다. 다른 제보를 기다리고 있습니다."` incident 상태는 `COLLECTING`을 유지한다.
 - Y의 신원(이름·연락처·방문 기록)은 X에게 노출하지 않는다. `제보자 #n`으로만 표시.
 - 열람용 signed URL 발급은 `audit_logs`에 남긴다.
 
@@ -489,7 +492,7 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 
 | Method/Path | 접근 | 설명 |
 |---|---|---|
-| `POST /api/v1/submissions/:id/submit-to-insurer` | 해당 X | `READY`에서만. `insurer_reviews(REVIEWING)` 생성, submission → `SUBMITTED`, incident → `REVIEWING`. 응답에 `integrity: { sha256, submittedAt }` |
+| `POST /api/v1/submissions/:id/submit-to-insurer` | 해당 X | `READY` + `incidentDetected=true`에서만. `insurer_reviews(REVIEWING)` 생성, submission → `SUBMITTED`, incident → `REVIEWING`. 응답에 `integrity: { sha256, submittedAt }` |
 | `POST /api/v1/submissions/:id/insurer-decision` | OPERATOR, 또는 `DEMO_MODE=true`일 때 해당 X(발표자) | `{ decision: "ADOPTED" | "REJECTED", note? }` |
 | `GET /api/v1/submissions/:id/insurer-review` | 해당 X, 제보자, OPERATOR | 현재 상태 |
 
@@ -567,7 +570,10 @@ DEPOSIT_PENDING → DEPOSITED → ADOPTION_PENDING → PAYOUT_SCHEDULED
 | F3 | TwelveLabs 차단 | `FAILED` 또는 fixture 일치 시 `READY(source=PRERECORDED)` |
 | F4 | 이미 ADOPTED에 REJECTED 시도 | 409 |
 | F5 | X 토큰으로 제보 생성 / 타인 submission 조회 | 403 / 404 |
-| F6 | 서버 재시작 중 `ANALYZING` | 재시작 후 `FAILED`로 정리되고 retry 가능(고아 상태 없음) |
+| F6 | 서버 재시작 중 `ANALYZING` | 재시작 후 sweep이 `FAILED(TIMEOUT)`로 정리하고 retry 가능(고아 상태 없음) |
+| F7 | `dashcam-a-parking-none.mp4` 분석 | `READY` + `incidentDetected=false`, X에 `NO_CANDIDATE` 1건, `candidates` 빈 배열 + `meta.noCandidateCount=1`, submit-to-insurer 409 |
+| F8 | 같은 incident에 매칭 2회 실행 | `WITNESS_REQUEST` 알림 총 1건(NULLS NOT DISTINCT 유니크 확인) |
+| F9 | `AI_MODE=fake`, 키 없음 | 서버 정상 시작, `/config.aiMode=fake`, 분석 결과 `source=PRERECORDED` |
 
 테스트는 별도 Supabase 프로젝트(또는 로컬 `supabase start`)와 fake TwelveLabs 클라이언트로 수행하고, 실제 키로 기준 영상 1개를 분석한 로그를 `fixtures/prerecorded/`에 남긴다.
 

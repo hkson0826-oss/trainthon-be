@@ -96,8 +96,7 @@ service role 키, TwelveLabs 키는 절대 `NEXT_PUBLIC_`에 넣지 않는다. �
 - 제출 절차:
   1. 사진마다 `POST /uploads/photo-url` → signed URL로 PUT(진행률)
   2. `POST /incidents`(photoObjectPaths 포함) → 201
-  3. 사진이 있으면 `POST /incidents/:id/photos`로 연결(BE가 `POST /incidents`에서 한 번에 처리하면 생략)
-  4. `/x/incidents/[id]/done`으로 이동
+  3. `/x/incidents/[id]/done`으로 이동 (사진 연결은 `POST /incidents`가 한 번에 처리하므로 별도 호출 없음)
 - 오류: 400 fieldErrors를 필드 아래 표시. 업로드 실패 시 해당 사진만 재시도.
 - 완료 조건: 320px 너비에서 가로 스크롤 없음, 모든 입력 터치 영역 ≥ 44pt.
 
@@ -163,6 +162,7 @@ service role 키, TwelveLabs 키는 절대 `NEXT_PUBLIC_`에 넣지 않는다. �
 ### 3.8 X 후보 발견 알림 화면 (필수 화면 8)
 
 - `/notifications` 또는 `/x` 상단 배너: `CANDIDATE_FOUND` — `A주차장 사고에 대한 후보 영상이 발견되었습니다. 00:12 지점을 확인해 보세요.` 탭 → `/x/incidents/[id]#candidates`.
+- `NO_CANDIDATE`(제보 영상에서 관련 장면을 찾지 못함)는 중립 톤의 알림 카드로 표시하고 탭 시 요청 상세로 이동. 후보 카드가 아니라 `후보 없음으로 끝난 제보 {meta.noCandidateCount}건` 요약 문구로만 보인다.
 - X 계정에서도 5초 폴링. Y → X 전환 직후 배너가 보여야 한다.
 
 ### 3.9 `/x/incidents/[id]` — 요청 상세·보험사 채택·보상 예정 (필수 화면 8, 9)

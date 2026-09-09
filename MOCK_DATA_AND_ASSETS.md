@@ -232,6 +232,7 @@ X가 폼에 입력할 값이자 테스트·mock API가 쓰는 값이다.
 |---|---|---|
 | `WITNESS_REQUEST` | 목격 영상 확인 요청 | `{date} {from}~{to} {place}에서 사고가 있었습니다. 당시 블랙박스 영상이 있다면 확인해 주세요.` |
 | `CANDIDATE_FOUND` | 사고 후보 영상 발견 | `{place} 사고에 대한 후보 영상이 발견되었습니다. {timestampLabel} 지점을 확인해 보세요.` |
+| `NO_CANDIDATE` | 관련 장면 없음 | `{place} 사고에 제보된 영상에서 관련 장면을 찾지 못했습니다. 다른 제보를 기다리고 있습니다.` |
 | `ADOPTION_UPDATED` | 증거 채택 결과 | `제출한 영상이 보험사 검토에서 '{decisionLabel}' 처리되었습니다. (데모)` |
 | `REWARD_SCHEDULED` | 보상 지급 예정 | `{place} 사고 제보 보상 {amount}원이 지급 예정 상태가 되었습니다. (데모)` |
 
